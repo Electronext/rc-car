@@ -22,6 +22,7 @@
 #include "esp_adc/adc_oneshot.h"
 
 #include "rc_config.h"
+#include "as5048b_sanity.h"
 
 static const char *TAG = "RC";
 
@@ -356,6 +357,15 @@ static void transmitter_task(void *arg)
 static void transmitter_init(void)
 {
     ESP_LOGI(TAG, "Starting TRANSMITTER");
+
+#if AS5048B_SANITY_TEST
+    /*
+     * Bench-test mode only: validate the two magnetic sensors
+     * without starting joystick ADC handling, Wi-Fi or ESP-NOW.
+     */
+    as5048b_sanity_init();
+    return;
+#endif
 
     /*
      * Joystick pushbutton.
