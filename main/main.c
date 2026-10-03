@@ -163,7 +163,9 @@ static float read_speed_scale(void)
 #if USE_SPEED_POT
     int raw = adc_read_channel(speed_channel);
 
-    float p = (float)raw / 4095.0f;
+    float p =
+        (float)(raw - SPEED_POT_ADC_MIN) /
+        (float)(SPEED_POT_ADC_MAX - SPEED_POT_ADC_MIN);
 
     if (p < 0.0f) p = 0.0f;
     if (p > 1.0f) p = 1.0f;
