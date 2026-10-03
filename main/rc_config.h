@@ -9,11 +9,30 @@
 #define RC_TX_PERIOD_MS         20             // 50 Hz
 #define RC_FAILSAFE_MS          100
 
-// Joystick
+// Legacy analogue joystick pins.
+// These remain until the AS5048B path replaces the analogue
+// joystick handling after bring-up.
 #define JOY_X_GPIO              0
 #define JOY_Y_GPIO              1
-#define SPEED_GPIO              3
+
+// Final transmitter analogue / control allocation.
+#define BATTERY_GPIO            0
+#define SPEED_GPIO              1
 #define BUTTON_GPIO             4
+
+// AS5048B magnetic joystick sensors.
+#define AS5048B_SDA_GPIO        6
+#define AS5048B_SCL_GPIO        7
+#define AS5048B_I2C_HZ          400000
+
+// Sensor 1: A2=LOW,  A1=LOW  -> 0x40
+// Sensor 2: A2=HIGH, A1=LOW  -> 0x42
+#define AS5048B_ADDR_1          0x40
+#define AS5048B_ADDR_2          0x42
+
+// Temporary bench mode: read the two AS5048Bs only.
+// ESP-NOW transmitter control is not started while this is 1.
+#define AS5048B_SANITY_TEST     1
 
 // Set to 0 if speed pot isn't fitted yet.
 #define USE_SPEED_POT           0
