@@ -43,6 +43,19 @@
 #define AS5048B_ADDR_1          0x40
 #define AS5048B_ADDR_2          0x42
 
+// Steering calibration (AS5048B at 0x40).
+// Full-travel endpoints come from the calibration sweep.
+// The deadband covers the linkage free play before the centring
+// springs begin to provide meaningful resistance.
+#define STEERING_RAW_MIN              2955
+#define STEERING_DEADBAND_LOW         4950
+#define STEERING_CENTER_RAW           5232
+#define STEERING_DEADBAND_HIGH        5500
+#define STEERING_RAW_MAX              7865
+
+// Set to 1 later if the physical steering direction is reversed.
+#define STEERING_INVERT               0
+
 // Temporary bench mode: read the two AS5048Bs only.
 // ESP-NOW transmitter control is not started while this is 1.
 #define AS5048B_SANITY_TEST     1
