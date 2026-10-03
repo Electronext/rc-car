@@ -6,7 +6,7 @@
 // ESP-NOW
 #define RC_WIFI_CHANNEL         1
 #define RC_MAGIC                0x52434331UL   // "RCC1"
-#define RC_TX_PERIOD_MS         10             // 100 Hz
+#define RC_TX_PERIOD_MS         20             // 50 Hz
 #define RC_FAILSAFE_MS          100
 
 // Joystick
