@@ -460,6 +460,38 @@ static const char *field_status(uint8_t diagnostics)
 }
 
 
+static float steering_from_raw(uint16_t raw)
+{
+    float value;
+
+    if (raw < STEERING_DEADBAND_LOW) {
+        value =
+            -(float)(STEERING_DEADBAND_LOW - raw) /
+            (float)(STEERING_DEADBAND_LOW - STEERING_RAW_MIN);
+    } else if (raw > STEERING_DEADBAND_HIGH) {
+        value =
+            (float)(raw - STEERING_DEADBAND_HIGH) /
+            (float)(STEERING_RAW_MAX - STEERING_DEADBAND_HIGH);
+    } else {
+        value = 0.0f;
+    }
+
+    if (value < -1.0f) {
+        value = -1.0f;
+    }
+
+    if (value > 1.0f) {
+        value = 1.0f;
+    }
+
+#if STEERING_INVERT
+    value = -value;
+#endif
+
+    return value;
+}
+
+
 static void log_sensor(uint8_t address,
                        i2c_master_dev_handle_t sensor,
                        as5048b_stats_t *stats)
@@ -500,26 +532,52 @@ static void log_sensor(uint8_t address,
     bool comp_high =
         (sample.diagnostics & AS5048B_DIAG_COMP_HIGH) != 0;
 
-    ESP_LOGI(
-        TAG,
-        "0x%02X angle=%8.3f deg raw=%5u | "
-        "AGC=%3u [%3u..%3u] MAG=%5u [%5u..%5u] | "
-        "OCF=%u COF=%u CH=%u CL=%u FIELD=%s",
-        address,
-        degrees,
-        sample.angle,
-        sample.agc,
-        stats->agc_min,
-        stats->agc_max,
-        sample.magnitude,
-        stats->magnitude_min,
-        stats->magnitude_max,
-        ocf,
-        cof,
-        comp_high,
-        comp_low,
-        field_status(sample.diagnostics)
-    );
+    if (address == AS5048B_ADDR_1) {
+        float steering = steering_from_raw(sample.angle);
+
+        ESP_LOGI(
+            TAG,
+            "0x%02X STEER=%+.3f angle=%8.3f deg raw=%5u | "
+            "AGC=%3u [%3u..%3u] MAG=%5u [%5u..%5u] | "
+            "OCF=%u COF=%u CH=%u CL=%u FIELD=%s",
+            address,
+            steering,
+            degrees,
+            sample.angle,
+            sample.agc,
+            stats->agc_min,
+            stats->agc_max,
+            sample.magnitude,
+            stats->magnitude_min,
+            stats->magnitude_max,
+            ocf,
+            cof,
+            comp_high,
+            comp_low,
+            field_status(sample.diagnostics)
+        );
+    } else {
+        ESP_LOGI(
+            TAG,
+            "0x%02X angle=%8.3f deg raw=%5u | "
+            "AGC=%3u [%3u..%3u] MAG=%5u [%5u..%5u] | "
+            "OCF=%u COF=%u CH=%u CL=%u FIELD=%s",
+            address,
+            degrees,
+            sample.angle,
+            sample.agc,
+            stats->agc_min,
+            stats->agc_max,
+            sample.magnitude,
+            stats->magnitude_min,
+            stats->magnitude_max,
+            ocf,
+            cof,
+            comp_high,
+            comp_low,
+            field_status(sample.diagnostics)
+        );
+    }
 }
 
 
@@ -564,6 +622,17 @@ void as5048b_sanity_init(void)
     );
 
     adc_sanity_init();
+
+    ESP_LOGI(
+        TAG,
+        "Steering calibration: raw %d -> deadband %d..%d "
+        "(centre %d) -> raw %d",
+        STEERING_RAW_MIN,
+        STEERING_DEADBAND_LOW,
+        STEERING_DEADBAND_HIGH,
+        STEERING_CENTER_RAW,
+        STEERING_RAW_MAX
+    );
 
     ESP_LOGI(
         TAG,
