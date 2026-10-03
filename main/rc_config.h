@@ -24,10 +24,10 @@
 #define BATTERY_DIVIDER_TOP_OHMS       100000
 #define BATTERY_DIVIDER_BOTTOM_OHMS    100000
 
-// Speed pot wiring: 3.3V -> 3.3k -> 10k linear pot -> GND,
+// Speed pot wiring: 3.3V -> 330R -> 1k linear pot -> GND,
 // with the wiper connected to SPEED_GPIO.
-#define SPEED_POT_SERIES_OHMS          3300
-#define SPEED_POT_OHMS                 10000
+#define SPEED_POT_SERIES_OHMS          330
+#define SPEED_POT_OHMS                 1000
 
 // AS5048B magnetic joystick sensors.
 #define AS5048B_SDA_GPIO        6
