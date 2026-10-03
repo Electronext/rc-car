@@ -9,6 +9,10 @@
 
 #include "driver/i2c_master.h"
 
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+
 #include "rc_config.h"
 #include "as5048b_sanity.h"
 
@@ -23,6 +27,7 @@
 #define AS5048B_COUNTS_PER_REV      16384U
 #define AS5048B_READ_TIMEOUT_MS     50
 #define AS5048B_TEST_PERIOD_MS      200
+#define ADC_SAMPLE_COUNT             16
 
 static const char *TAG = "AS5048B";
 
@@ -41,12 +46,27 @@ typedef struct {
     uint16_t magnitude_max;
 } as5048b_stats_t;
 
+typedef struct {
+    bool initialised;
+    int raw_min;
+    int raw_max;
+    int mv_min;
+    int mv_max;
+} adc_stats_t;
+
 static i2c_master_bus_handle_t bus_handle = NULL;
 static i2c_master_dev_handle_t sensor_1 = NULL;
 static i2c_master_dev_handle_t sensor_2 = NULL;
 
 static as5048b_stats_t stats_1 = {0};
 static as5048b_stats_t stats_2 = {0};
+
+static adc_oneshot_unit_handle_t adc_handle = NULL;
+static adc_cali_handle_t adc_cali_handle = NULL;
+static adc_channel_t battery_channel;
+static adc_channel_t speed_channel;
+
+static adc_stats_t speed_stats = {0};
 
 
 static esp_err_t add_sensor(uint8_t address,
@@ -173,6 +193,235 @@ static void update_stats(as5048b_stats_t *stats,
 }
 
 
+
+static void update_adc_stats(adc_stats_t *stats,
+                             int raw,
+                             int millivolts)
+{
+    if (!stats->initialised) {
+        stats->raw_min = raw;
+        stats->raw_max = raw;
+        stats->mv_min = millivolts;
+        stats->mv_max = millivolts;
+        stats->initialised = true;
+        return;
+    }
+
+    if (raw < stats->raw_min) {
+        stats->raw_min = raw;
+    }
+
+    if (raw > stats->raw_max) {
+        stats->raw_max = raw;
+    }
+
+    if (millivolts < stats->mv_min) {
+        stats->mv_min = millivolts;
+    }
+
+    if (millivolts > stats->mv_max) {
+        stats->mv_max = millivolts;
+    }
+}
+
+
+static esp_err_t read_adc_average(adc_channel_t channel,
+                                  int *raw_average,
+                                  int *millivolts)
+{
+    int64_t total = 0;
+
+    for (int i = 0; i < ADC_SAMPLE_COUNT; i++) {
+        int raw = 0;
+        esp_err_t err = adc_oneshot_read(
+            adc_handle,
+            channel,
+            &raw
+        );
+
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        total += raw;
+    }
+
+    *raw_average = (int)(total / ADC_SAMPLE_COUNT);
+
+    return adc_cali_raw_to_voltage(
+        adc_cali_handle,
+        *raw_average,
+        millivolts
+    );
+}
+
+
+static void log_analogue_inputs(void)
+{
+    int battery_raw = 0;
+    int battery_adc_mv = 0;
+    int speed_raw = 0;
+    int speed_mv = 0;
+
+    esp_err_t battery_err = read_adc_average(
+        battery_channel,
+        &battery_raw,
+        &battery_adc_mv
+    );
+
+    esp_err_t speed_err = read_adc_average(
+        speed_channel,
+        &speed_raw,
+        &speed_mv
+    );
+
+    if (battery_err == ESP_OK) {
+        int64_t battery_mv =
+            (int64_t)battery_adc_mv *
+            (BATTERY_DIVIDER_TOP_OHMS +
+             BATTERY_DIVIDER_BOTTOM_OHMS);
+
+        battery_mv =
+            (battery_mv + BATTERY_DIVIDER_BOTTOM_OHMS / 2) /
+            BATTERY_DIVIDER_BOTTOM_OHMS;
+
+        ESP_LOGI(
+            TAG,
+            "BAT  raw=%4d adc=%4d mV -> %lld.%03lld V "
+            "(divider %d/%d)",
+            battery_raw,
+            battery_adc_mv,
+            (long long)(battery_mv / 1000),
+            (long long)(battery_mv % 1000),
+            BATTERY_DIVIDER_TOP_OHMS,
+            BATTERY_DIVIDER_BOTTOM_OHMS
+        );
+    } else {
+        ESP_LOGW(
+            TAG,
+            "Battery ADC read failed: %s",
+            esp_err_to_name(battery_err)
+        );
+    }
+
+    if (speed_err == ESP_OK) {
+        update_adc_stats(
+            &speed_stats,
+            speed_raw,
+            speed_mv
+        );
+
+        ESP_LOGI(
+            TAG,
+            "SPEED raw=%4d [%4d..%4d] adc=%4d mV "
+            "[%4d..%4d mV]",
+            speed_raw,
+            speed_stats.raw_min,
+            speed_stats.raw_max,
+            speed_mv,
+            speed_stats.mv_min,
+            speed_stats.mv_max
+        );
+    } else {
+        ESP_LOGW(
+            TAG,
+            "Speed-pot ADC read failed: %s",
+            esp_err_to_name(speed_err)
+        );
+    }
+}
+
+
+static void adc_sanity_init(void)
+{
+    adc_oneshot_unit_init_cfg_t unit_cfg = {
+        .unit_id = ADC_UNIT_1
+    };
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_new_unit(
+            &unit_cfg,
+            &adc_handle
+        )
+    );
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT
+    };
+
+    adc_unit_t unit;
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_io_to_channel(
+            BATTERY_GPIO,
+            &unit,
+            &battery_channel
+        )
+    );
+
+    if (unit != ADC_UNIT_1) {
+        ESP_LOGE(TAG, "BATTERY_GPIO is not on ADC1");
+        abort();
+    }
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc_handle,
+            battery_channel,
+            &chan_cfg
+        )
+    );
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_io_to_channel(
+            SPEED_GPIO,
+            &unit,
+            &speed_channel
+        )
+    );
+
+    if (unit != ADC_UNIT_1) {
+        ESP_LOGE(TAG, "SPEED_GPIO is not on ADC1");
+        abort();
+    }
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc_handle,
+            speed_channel,
+            &chan_cfg
+        )
+    );
+
+    adc_cali_curve_fitting_config_t cali_cfg = {
+        .unit_id = ADC_UNIT_1,
+        .chan = battery_channel,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT
+    };
+
+    ESP_ERROR_CHECK(
+        adc_cali_create_scheme_curve_fitting(
+            &cali_cfg,
+            &adc_cali_handle
+        )
+    );
+
+    ESP_LOGI(
+        TAG,
+        "ADC calibration: GPIO%d battery via %dk/%dk divider; "
+        "GPIO%d speed pot via %d ohm + %d ohm pot",
+        BATTERY_GPIO,
+        BATTERY_DIVIDER_TOP_OHMS / 1000,
+        BATTERY_DIVIDER_BOTTOM_OHMS / 1000,
+        SPEED_GPIO,
+        SPEED_POT_SERIES_OHMS,
+        SPEED_POT_OHMS
+    );
+}
+
+
 static const char *field_status(uint8_t diagnostics)
 {
     if (diagnostics & AS5048B_DIAG_COF) {
@@ -288,6 +537,8 @@ static void sanity_task(void *arg)
             &stats_2
         );
 
+        log_analogue_inputs();
+
         vTaskDelay(pdMS_TO_TICKS(AS5048B_TEST_PERIOD_MS));
     }
 }
@@ -310,6 +561,8 @@ void as5048b_sanity_init(void)
         AS5048B_ADDR_1,
         AS5048B_ADDR_2
     );
+
+    adc_sanity_init();
 
     ESP_LOGI(
         TAG,
