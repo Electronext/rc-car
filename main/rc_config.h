@@ -29,6 +29,10 @@
 #define SPEED_POT_SERIES_OHMS          330
 #define SPEED_POT_OHMS                 1000
 
+// Measured ADC endpoints from full mechanical travel.
+#define SPEED_POT_ADC_MIN               4
+#define SPEED_POT_ADC_MAX               3385
+
 // AS5048B magnetic joystick sensors.
 #define AS5048B_SDA_GPIO        6
 #define AS5048B_SCL_GPIO        7
@@ -50,8 +54,8 @@
 #define JOYSTICK_DEADBAND       0.05f
 
 // Speed pot:
-// At minimum, full stick gives 20% motor demand.
-// At maximum, full stick gives 100%.
+// At minimum pot, full stick gives SPEED_MIN motor demand.
+// At maximum pot, full stick gives 100%.
 #define SPEED_MIN               0.50f
 
 // Receiver -> SA8302
