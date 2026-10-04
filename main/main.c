@@ -1241,12 +1241,57 @@ static void receiver_init(void)
 #endif
 
 
+#if !RC_TRANSMITTER
+static void receiver_motor_pins_safe_early(void)
+{
+    const uint64_t motor_mask =
+        (1ULL << MOTOR_L_FWD_GPIO) |
+        (1ULL << MOTOR_L_REV_GPIO) |
+        (1ULL << MOTOR_R_FWD_GPIO) |
+        (1ULL << MOTOR_R_REV_GPIO);
+
+    /*
+     * Preload the output latches LOW before enabling output drive.
+     * This minimises any software-controlled transient when the pins
+     * change from reset/high-Z state to GPIO outputs.
+     */
+    gpio_set_level(MOTOR_L_FWD_GPIO, 0);
+    gpio_set_level(MOTOR_L_REV_GPIO, 0);
+    gpio_set_level(MOTOR_R_FWD_GPIO, 0);
+    gpio_set_level(MOTOR_R_REV_GPIO, 0);
+
+    gpio_config_t cfg = {
+        .pin_bit_mask = motor_mask,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&cfg));
+
+    gpio_set_level(MOTOR_L_FWD_GPIO, 0);
+    gpio_set_level(MOTOR_L_REV_GPIO, 0);
+    gpio_set_level(MOTOR_R_FWD_GPIO, 0);
+    gpio_set_level(MOTOR_R_REV_GPIO, 0);
+}
+#endif
+
+
 /* ============================================================
  * app_main
  * ============================================================ */
 
 void app_main(void)
 {
+#if !RC_TRANSMITTER
+    /*
+     * Put the H-bridge inputs into their safe state before NVS,
+     * Wi-Fi, queues, PWM or any other application initialisation.
+     */
+    receiver_motor_pins_safe_early();
+#endif
+
     esp_err_t ret = nvs_flash_init();
 
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
