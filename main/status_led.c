@@ -1,5 +1,8 @@
 #include <stdint.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "esp_err.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_encoder.h"
@@ -104,4 +107,19 @@ void status_led_set_rgb(uint8_t red, uint8_t green, uint8_t blue)
 void status_led_off(void)
 {
     status_led_set_rgb(0, 0, 0);
+}
+
+
+void status_led_self_test(void)
+{
+    status_led_set_rgb(255, 0, 0);
+    vTaskDelay(pdMS_TO_TICKS(STATUS_LED_SELF_TEST_MS));
+
+    status_led_set_rgb(0, 255, 0);
+    vTaskDelay(pdMS_TO_TICKS(STATUS_LED_SELF_TEST_MS));
+
+    status_led_set_rgb(0, 0, 255);
+    vTaskDelay(pdMS_TO_TICKS(STATUS_LED_SELF_TEST_MS));
+
+    status_led_off();
 }
