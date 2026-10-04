@@ -112,27 +112,58 @@ RTC_DATA_ATTR static uint16_t rtc_speed_raw = 0;
 RTC_DATA_ATTR static int8_t rtc_mode_position = 0;
 
 
-static int adc_read_channel(adc_channel_t channel)
+static esp_err_t adc_read_channel(adc_channel_t channel,
+                                  int *raw)
 {
-    int raw = 0;
+    esp_err_t err = ESP_FAIL;
 
-    ESP_ERROR_CHECK(
-        adc_oneshot_read(adc_handle, channel, &raw)
-    );
+    for (int attempt = 0;
+         attempt < ADC_READ_RETRY_COUNT;
+         attempt++) {
 
-    return raw;
+        err = adc_oneshot_read(
+            adc_handle,
+            channel,
+            raw
+        );
+
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+
+        if (err != ESP_ERR_TIMEOUT) {
+            return err;
+        }
+
+        vTaskDelay(1);
+    }
+
+    return err;
 }
 
 
-static int adc_average_channel(adc_channel_t channel, int samples)
+static esp_err_t adc_average_channel(adc_channel_t channel,
+                                     int samples,
+                                     int *average)
 {
     int64_t total = 0;
 
     for (int i = 0; i < samples; i++) {
-        total += adc_read_channel(channel);
+        int raw = 0;
+
+        esp_err_t err =
+            adc_read_channel(channel, &raw);
+
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        total += raw;
     }
 
-    return (int)(total / samples);
+    *average = (int)(total / samples);
+
+    return ESP_OK;
 }
 
 
