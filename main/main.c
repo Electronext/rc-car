@@ -203,20 +203,6 @@ static void joystick_mix(float x, float y,
 }
 
 
-static void enter_deep_sleep(void)
-{
-    ESP_LOGI(TAG, "Entering deep sleep");
-
-    /*
-     * No GPIO wake source is configured here: GPIO4 is now the
-     * three-position analogue selector, not the old pushbutton.
-     *
-     * The final inactivity/low-battery policy will configure the
-     * appropriate periodic wake source before calling this helper.
-     */
-    esp_deep_sleep_start();
-}
-
 static void transmitter_task(void *arg)
 {
     rc_packet_t packet = {
