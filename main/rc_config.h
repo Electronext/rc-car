@@ -58,6 +58,15 @@
 // Set to 1 later if the physical steering direction is reversed.
 #define STEERING_INVERT               0
 
+// Throttle calibration (AS5048B at 0x42).
+// Forward decreases the raw angle; reverse increases it.
+// Full-output points are set slightly inside the measured hard stops.
+#define THROTTLE_RAW_FORWARD          12800
+#define THROTTLE_NEUTRAL_LOW          13940
+#define THROTTLE_CENTER_RAW           13975
+#define THROTTLE_NEUTRAL_HIGH         14010
+#define THROTTLE_RAW_REVERSE          15130
+
 // Temporary bench mode: read the two AS5048Bs only.
 // ESP-NOW transmitter control is not started while this is 1.
 #define AS5048B_SANITY_TEST     1
@@ -65,10 +74,9 @@
 // Speed pot is fitted.
 #define USE_SPEED_POT           1
 
-// Three-position ON-OFF-ON selector on GPIO4. The common node is
-// biased midway by equal resistors to 3V3 and GND; the two ON
-// positions pull it to an end rail. Raw thresholds are deliberately
-// broad and can be tightened after the first selector calibration log.
+// Three-position ON-OFF-ON selector on GPIO4. Measured positions are
+// approximately 3 / 2219 / 4095 raw for LOW / CENTER / HIGH.
+// Thresholds intentionally leave very large guard bands.
 #define MODE_SWITCH_ADC_LOW_MAX       1000
 #define MODE_SWITCH_ADC_HIGH_MIN      3000
 
