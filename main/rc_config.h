@@ -122,7 +122,18 @@
 // At maximum pot, full stick gives 100%.
 #define SPEED_MIN               0.50f
 
+// Throttle-dependent skid steering.
+// At zero throttle, full steering counter-rotates both motors at the
+// speed-pot limit. At full throttle, full steering keeps the outer
+// motor at full demand and reduces the inner motor by this fraction.
+// 0.40 => inner motor runs at 60% of outer motor at full throttle.
+#define TURN_INNER_REDUCTION_FULL_THROTTLE  0.40f
+
 // Receiver -> SA8302
+// Fit external pulldowns (recommended 4.7k) from all four SA8302
+// logic inputs to GND. GPIO6 has a reset-time JTAG pull-up on an
+// unfused ESP32-C3, so firmware alone cannot guarantee a safe LOW
+// throughout ROM/bootloader startup.
 #define MOTOR_L_FWD_GPIO        3   // INA
 #define MOTOR_L_REV_GPIO        4   // INB
 #define MOTOR_R_FWD_GPIO        5   // INC
