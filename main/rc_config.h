@@ -136,8 +136,8 @@
 // throughout ROM/bootloader startup.
 #define MOTOR_L_FWD_GPIO        3   // INA
 #define MOTOR_L_REV_GPIO        4   // INB
-#define MOTOR_R_FWD_GPIO        5   // INC
-#define MOTOR_R_REV_GPIO        6   // IND
+#define MOTOR_R_FWD_GPIO        0   // INC
+#define MOTOR_R_REV_GPIO        1   // IND
 
 // Motor PWM
 #define MOTOR_PWM_FREQ_HZ       1000
