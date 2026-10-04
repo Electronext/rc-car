@@ -349,15 +349,30 @@ static float speed_scale_from_raw(int raw)
 }
 
 
+static int steering_frame_update(uint16_t throttle_raw,
+                                 int current_frame)
+{
+    if (throttle_raw <= THROTTLE_STEER_FRAME_FORWARD_RAW) {
+        return 1;
+    }
+
+    if (throttle_raw >= THROTTLE_STEER_FRAME_REVERSE_RAW) {
+        return -1;
+    }
+
+    return current_frame;
+}
+
+
 static void skid_steer_mix(float steering,
                            float throttle,
+                           int steering_frame,
                            float *left,
                            float *right)
 {
     float steer_mag = fabsf(steering);
     float throttle_mag = fabsf(throttle);
     float reduction = TURN_INNER_REDUCTION_FULL_THROTTLE;
-    float transition = TURN_TRAVEL_BLEND_FULL_THROTTLE;
 
     if (steer_mag > 1.0f) steer_mag = 1.0f;
     if (throttle_mag > 1.0f) throttle_mag = 1.0f;
@@ -365,68 +380,18 @@ static void skid_steer_mix(float steering,
     if (reduction < 0.0f) reduction = 0.0f;
     if (reduction > 1.0f) reduction = 1.0f;
 
-    if (transition < 0.01f) transition = 0.01f;
-    if (transition > 1.0f) transition = 1.0f;
+    float mean =
+        throttle * (1.0f - 0.5f * reduction * steer_mag);
 
-    /*
-     * Blend factor for the steering MODEL, not the throttle itself.
-     * Smoothstep gives zero slope at both ends so there is no abrupt
-     * steering-direction change as throttle passes through neutral.
-     */
-    float x = throttle_mag / transition;
+    float differential_gain =
+        (1.0f - throttle_mag) +
+        throttle_mag * (0.5f * reduction);
 
-    if (x > 1.0f) {
-        x = 1.0f;
-    }
+    float differential =
+        -steering * (float)steering_frame * differential_gain;
 
-    float travel_blend =
-        x * x * (3.0f - 2.0f * x);
-
-    /*
-     * Pivot contribution is independent of travel direction:
-     * right/clockwise steering is negative, therefore
-     *   right: L positive, R negative
-     *   left : L negative, R positive
-     *
-     * This dominates around zero throttle and gives true zero-radius
-     * turns without flipping direction when throttle crosses neutral.
-     */
-    float pivot_left = -steering;
-    float pivot_right = steering;
-
-    /*
-     * Moving-arc target keeps the outside wheel at the requested
-     * throttle and retards only the inside wheel. The same physical
-     * inside wheel is used forward and reverse; the throttle sign
-     * naturally reverses the vehicle's yaw relative to its direction
-     * of travel.
-     */
-    float moving_left = throttle;
-    float moving_right = throttle;
-
-    if (steering < 0.0f) {
-        // Right turn: right wheel is the inside wheel.
-        moving_right =
-            throttle * (1.0f - reduction * steer_mag);
-    } else if (steering > 0.0f) {
-        // Left turn: left wheel is the inside wheel.
-        moving_left =
-            throttle * (1.0f - reduction * steer_mag);
-    }
-
-    /*
-     * Straight-line throttle remains exactly linear. Only the
-     * steering contribution transitions from pivot to moving-arc.
-     */
-    float l =
-        throttle +
-        (1.0f - travel_blend) * pivot_left +
-        travel_blend * (moving_left - throttle);
-
-    float r =
-        throttle +
-        (1.0f - travel_blend) * pivot_right +
-        travel_blend * (moving_right - throttle);
+    float l = mean + differential;
+    float r = mean - differential;
 
     if (l >  1.0f) l =  1.0f;
     if (l < -1.0f) l = -1.0f;
@@ -653,6 +618,7 @@ static void transmitter_task(void *arg)
     };
 
     int64_t last_activity_us = esp_timer_get_time();
+    int steering_frame = 1;
     int activity_speed_raw = adc_read_channel(speed_channel);
     int activity_mode_position =
         mode_switch_position_from_raw(
@@ -674,6 +640,16 @@ static void transmitter_task(void *arg)
         int mode_position =
             mode_switch_position_from_raw(mode_raw);
 
+        if (throttle_err == ESP_OK &&
+            rc_as5048b_sample_valid(&throttle_sample)) {
+
+            steering_frame =
+                steering_frame_update(
+                    throttle_sample.angle,
+                    steering_frame
+                );
+        }
+
         bool controls_valid =
             steering_err == ESP_OK &&
             throttle_err == ESP_OK &&
@@ -692,6 +668,7 @@ static void transmitter_task(void *arg)
             skid_steer_mix(
                 steering,
                 throttle,
+                steering_frame,
                 &left,
                 &right
             );
@@ -796,13 +773,14 @@ static void transmitter_task(void *arg)
             ESP_LOGI(
                 TAG,
                 "steer=%+.3f throttle=%+.3f speed=%.3f | "
-                "L=%+.3f R=%+.3f | mode=%d | link=%s ack=%u",
+                "L=%+.3f R=%+.3f | mode=%d frame=%s | link=%s ack=%u",
                 steering,
                 throttle,
                 speed,
                 left,
                 right,
                 mode_position,
+                steering_frame > 0 ? "FWD" : "REV",
                 linked ? "OK" : "WAIT",
                 (unsigned)last_ack_sequence
             );
