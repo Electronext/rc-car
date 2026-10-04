@@ -86,6 +86,7 @@
 #define RC_LINK_TIMEOUT_MS             500
 #define STATUS_LED_ON_MS               300
 #define STATUS_LED_OFF_MS              700
+#define STATUS_LED_BRIGHTNESS           48
 
 // Inactivity is based on user-control movement, not packet traffic.
 #define TX_INACTIVITY_SLEEP_MS      300000
