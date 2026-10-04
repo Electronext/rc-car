@@ -113,6 +113,7 @@
 #define TX_WAKE_STEERING_COUNTS          80
 #define TX_WAKE_THROTTLE_COUNTS          80
 #define TX_WAKE_SPEED_COUNTS              20
+#define ADC_READ_RETRY_COUNT                8
 
 // ADC oneshot can transiently return ESP_ERR_TIMEOUT when the ADC
 // hardware is busy. Retry rather than treating that as a fatal error.
