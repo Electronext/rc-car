@@ -105,6 +105,7 @@
 #define STATUS_LED_ON_MS               300
 #define STATUS_LED_OFF_MS              700
 #define STATUS_LED_BRIGHTNESS           48
+#define STATUS_LED_SELF_TEST_MS         150
 
 // Inactivity is based on user-control state, not packet traffic.
 // While asleep, wake briefly at this interval and sample controls
@@ -114,7 +115,6 @@
 #define TX_WAKE_STEERING_COUNTS          80
 #define TX_WAKE_THROTTLE_COUNTS          80
 #define TX_WAKE_SPEED_COUNTS              20
-#define ADC_READ_RETRY_COUNT                8
 
 // ADC oneshot can transiently return ESP_ERR_TIMEOUT when the ADC
 // hardware is busy. Retry rather than treating that as a fatal error.
@@ -144,10 +144,15 @@
 #define MOTOR_R_FWD_GPIO        0   // INC
 #define MOTOR_R_REV_GPIO        1   // IND
 
-// Motor PWM
+// Motor PWM. Logical demand is remapped over the usable motor range:
+// a stopped/reversing motor gets a short 20% start boost, then running
+// demand is scaled over 15%..100%.
 #define MOTOR_PWM_FREQ_HZ       1000
 #define MOTOR_PWM_BITS          10
 #define MOTOR_PWM_MAX           ((1 << MOTOR_PWM_BITS) - 1)
+#define MOTOR_PWM_START_MIN     0.20f
+#define MOTOR_PWM_RUN_MIN       0.15f
+#define MOTOR_START_BOOST_MS    100
 
 // Set these after confirming physical direction.
 #define LEFT_INVERT             0
