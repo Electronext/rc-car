@@ -65,16 +65,16 @@
 // Throttle calibration (AS5048B at 0x42).
 // Forward decreases the raw angle; reverse increases it.
 // Full-output points are set slightly inside the measured hard stops.
-#define THROTTLE_RAW_FORWARD          12800
+#define THROTTLE_RAW_FORWARD          12765
 #define THROTTLE_NEUTRAL_LOW          13940
 #define THROTTLE_CENTER_RAW           13975
 #define THROTTLE_NEUTRAL_HIGH         14010
-#define THROTTLE_RAW_REVERSE          15130
+#define THROTTLE_RAW_REVERSE          15165
 
-// Preserve the same control sensitivity in both directions rather
-// than stretching the shorter side to +/-1.0. Forward has the
-// slightly larger usable span in the measured calibration.
-#define THROTTLE_COUNTS_PER_UNIT      (THROTTLE_NEUTRAL_LOW - THROTTLE_RAW_FORWARD)
+// Preserve identical counts-per-unit sensitivity in both directions.
+// Measured forward usable travel is ~1175 counts; reverse is ~1155,
+// so reverse intentionally tops out slightly below 100%.
+#define THROTTLE_COUNTS_PER_UNIT      1175
 
 // Temporary bench mode: read the two AS5048Bs only.
 // ESP-NOW transmitter control is not started while this is 1.
@@ -105,8 +105,14 @@
 #define STATUS_LED_OFF_MS              700
 #define STATUS_LED_BRIGHTNESS           48
 
-// Inactivity is based on user-control movement, not packet traffic.
-#define TX_INACTIVITY_SLEEP_MS      300000
+// Inactivity is based on user-control state, not packet traffic.
+// While asleep, wake briefly at this interval and sample controls
+// without starting Wi-Fi; stay asleep if nothing moved.
+#define TX_INACTIVITY_SLEEP_MS       300000
+#define TX_SLEEP_POLL_MS               1000
+#define TX_WAKE_STEERING_COUNTS          80
+#define TX_WAKE_THROTTLE_COUNTS          80
+#define TX_WAKE_SPEED_COUNTS              20
 
 // Joystick deadband as fraction of half travel.
 #define JOYSTICK_DEADBAND       0.05f
