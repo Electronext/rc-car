@@ -78,7 +78,7 @@
 
 // Temporary bench mode: read the two AS5048Bs only.
 // ESP-NOW transmitter control is not started while this is 1.
-#define AS5048B_SANITY_TEST     1
+#define AS5048B_SANITY_TEST     0
 
 // Speed pot is fitted.
 #define USE_SPEED_POT           1
