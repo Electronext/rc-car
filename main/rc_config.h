@@ -114,6 +114,10 @@
 #define TX_WAKE_THROTTLE_COUNTS          80
 #define TX_WAKE_SPEED_COUNTS              20
 
+// ADC oneshot can transiently return ESP_ERR_TIMEOUT when the ADC
+// hardware is busy. Retry rather than treating that as a fatal error.
+#define ADC_READ_RETRY_COUNT                8
+
 // Joystick deadband as fraction of half travel.
 #define JOYSTICK_DEADBAND       0.05f
 
@@ -131,9 +135,8 @@
 
 // Receiver -> SA8302
 // Fit external pulldowns (recommended 4.7k) from all four SA8302
-// logic inputs to GND. GPIO6 has a reset-time JTAG pull-up on an
-// unfused ESP32-C3, so firmware alone cannot guarantee a safe LOW
-// throughout ROM/bootloader startup.
+// logic inputs to GND so they stay deterministically LOW throughout
+// ROM/bootloader startup before application firmware takes control.
 #define MOTOR_L_FWD_GPIO        3   // INA
 #define MOTOR_L_REV_GPIO        4   // INB
 #define MOTOR_R_FWD_GPIO        0   // INC
