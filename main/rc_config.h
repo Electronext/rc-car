@@ -9,6 +9,10 @@
 #define RC_TX_PERIOD_MS         20             // 50 Hz
 #define RC_FAILSAFE_MS          100
 
+// Fixed STA MACs for the two ESP32-C3 boards.
+#define RC_TX_MAC_INIT          {0x88, 0x56, 0xA6, 0x58, 0x57, 0xF8}
+#define RC_RX_MAC_INIT          {0x48, 0xCA, 0x43, 0xD4, 0x13, 0xB4}
+
 // Legacy analogue joystick pins.
 // These remain until the AS5048B path replaces the analogue
 // joystick handling after bring-up.
@@ -66,6 +70,11 @@
 #define THROTTLE_CENTER_RAW           13975
 #define THROTTLE_NEUTRAL_HIGH         14010
 #define THROTTLE_RAW_REVERSE          15130
+
+// Preserve the same control sensitivity in both directions rather
+// than stretching the shorter side to +/-1.0. Forward has the
+// slightly larger usable span in the measured calibration.
+#define THROTTLE_COUNTS_PER_UNIT      (THROTTLE_NEUTRAL_LOW - THROTTLE_RAW_FORWARD)
 
 // Temporary bench mode: read the two AS5048Bs only.
 // ESP-NOW transmitter control is not started while this is 1.
