@@ -580,8 +580,8 @@ static void transmitter_task(void *arg)
     };
 
     int64_t last_activity_us = esp_timer_get_time();
-    int previous_speed_raw = adc_read_channel(speed_channel);
-    int previous_mode_position =
+    int activity_speed_raw = adc_read_channel(speed_channel);
+    int activity_mode_position =
         mode_switch_position_from_raw(
             adc_read_channel(mode_switch_channel)
         );
@@ -660,16 +660,27 @@ static void transmitter_task(void *arg)
 
         int64_t now = esp_timer_get_time();
 
+        bool speed_changed =
+            abs(speed_raw - activity_speed_raw) >= TX_WAKE_SPEED_COUNTS;
+
+        bool mode_changed =
+            mode_position != activity_mode_position;
+
         if (steering != 0.0f ||
             throttle != 0.0f ||
-            abs(speed_raw - previous_speed_raw) >= TX_WAKE_SPEED_COUNTS ||
-            mode_position != previous_mode_position) {
+            speed_changed ||
+            mode_changed) {
 
             last_activity_us = now;
-        }
 
-        previous_speed_raw = speed_raw;
-        previous_mode_position = mode_position;
+            if (speed_changed) {
+                activity_speed_raw = speed_raw;
+            }
+
+            if (mode_changed) {
+                activity_mode_position = mode_position;
+            }
+        }
 
         if ((now - last_activity_us) >=
             ((int64_t)TX_INACTIVITY_SLEEP_MS * 1000LL)) {
