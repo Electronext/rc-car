@@ -45,6 +45,8 @@ typedef struct {
     uint8_t agc_max;
     uint16_t magnitude_min;
     uint16_t magnitude_max;
+    uint16_t angle_min;
+    uint16_t angle_max;
 } as5048b_stats_t;
 
 typedef struct {
@@ -66,8 +68,10 @@ static adc_oneshot_unit_handle_t adc_handle = NULL;
 static adc_cali_handle_t adc_cali_handle = NULL;
 static adc_channel_t battery_channel;
 static adc_channel_t speed_channel;
+static adc_channel_t mode_switch_channel;
 
 static adc_stats_t speed_stats = {0};
+static adc_stats_t mode_switch_stats = {0};
 
 
 static esp_err_t add_sensor(uint8_t address,
@@ -172,6 +176,8 @@ static void update_stats(as5048b_stats_t *stats,
         stats->agc_max = sample->agc;
         stats->magnitude_min = sample->magnitude;
         stats->magnitude_max = sample->magnitude;
+        stats->angle_min = sample->angle;
+        stats->angle_max = sample->angle;
         stats->initialised = true;
         return;
     }
@@ -190,6 +196,14 @@ static void update_stats(as5048b_stats_t *stats,
 
     if (sample->magnitude > stats->magnitude_max) {
         stats->magnitude_max = sample->magnitude;
+    }
+
+    if (sample->angle < stats->angle_min) {
+        stats->angle_min = sample->angle;
+    }
+
+    if (sample->angle > stats->angle_max) {
+        stats->angle_max = sample->angle;
     }
 }
 
@@ -257,12 +271,29 @@ static esp_err_t read_adc_average(adc_channel_t channel,
 }
 
 
+
+static const char *mode_switch_position(int raw)
+{
+    if (raw <= MODE_SWITCH_ADC_LOW_MAX) {
+        return "LOW";
+    }
+
+    if (raw >= MODE_SWITCH_ADC_HIGH_MIN) {
+        return "HIGH";
+    }
+
+    return "CENTER";
+}
+
+
 static void log_analogue_inputs(void)
 {
     int battery_raw = 0;
     int battery_adc_mv = 0;
     int speed_raw = 0;
     int speed_mv = 0;
+    int mode_raw = 0;
+    int mode_mv = 0;
 
     esp_err_t battery_err = read_adc_average(
         battery_channel,
@@ -274,6 +305,12 @@ static void log_analogue_inputs(void)
         speed_channel,
         &speed_raw,
         &speed_mv
+    );
+
+    esp_err_t mode_err = read_adc_average(
+        mode_switch_channel,
+        &mode_raw,
+        &mode_mv
     );
 
     if (battery_err == ESP_OK) {
@@ -328,6 +365,32 @@ static void log_analogue_inputs(void)
             TAG,
             "Speed-pot ADC read failed: %s",
             esp_err_to_name(speed_err)
+        );
+    }
+
+    if (mode_err == ESP_OK) {
+        update_adc_stats(
+            &mode_switch_stats,
+            mode_raw,
+            mode_mv
+        );
+
+        ESP_LOGI(
+            TAG,
+            "MODE  raw=%4d [%4d..%4d] adc=%4d mV [%4d..%4d] -> %s",
+            mode_raw,
+            mode_switch_stats.raw_min,
+            mode_switch_stats.raw_max,
+            mode_mv,
+            mode_switch_stats.mv_min,
+            mode_switch_stats.mv_max,
+            mode_switch_position(mode_raw)
+        );
+    } else {
+        ESP_LOGW(
+            TAG,
+            "Mode-switch ADC read failed: %s",
+            esp_err_to_name(mode_err)
         );
     }
 }
@@ -395,6 +458,27 @@ static void adc_sanity_init(void)
         )
     );
 
+    ESP_ERROR_CHECK(
+        adc_oneshot_io_to_channel(
+            MODE_SWITCH_GPIO,
+            &unit,
+            &mode_switch_channel
+        )
+    );
+
+    if (unit != ADC_UNIT_1) {
+        ESP_LOGE(TAG, "MODE_SWITCH_GPIO is not on ADC1");
+        abort();
+    }
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc_handle,
+            mode_switch_channel,
+            &chan_cfg
+        )
+    );
+
     adc_cali_curve_fitting_config_t cali_cfg = {
         .unit_id = ADC_UNIT_1,
         .chan = battery_channel,
@@ -412,13 +496,15 @@ static void adc_sanity_init(void)
     ESP_LOGI(
         TAG,
         "ADC calibration: GPIO%d battery via %dk/%dk divider; "
-        "GPIO%d speed pot via %d ohm + %d ohm pot",
+        "GPIO%d speed pot via %d ohm + %d ohm pot; "
+        "GPIO%d 3-way selector",
         BATTERY_GPIO,
         BATTERY_DIVIDER_TOP_OHMS / 1000,
         BATTERY_DIVIDER_BOTTOM_OHMS / 1000,
         SPEED_GPIO,
         SPEED_POT_SERIES_OHMS,
-        SPEED_POT_OHMS
+        SPEED_POT_OHMS,
+        MODE_SWITCH_GPIO
     );
 }
 
@@ -559,12 +645,14 @@ static void log_sensor(uint8_t address,
     } else {
         ESP_LOGI(
             TAG,
-            "0x%02X angle=%8.3f deg raw=%5u | "
+            "0x%02X THROTTLE angle=%8.3f deg raw=%5u [%5u..%5u] | "
             "AGC=%3u [%3u..%3u] MAG=%5u [%5u..%5u] | "
             "OCF=%u COF=%u CH=%u CL=%u FIELD=%s",
             address,
             degrees,
             sample.angle,
+            stats->angle_min,
+            stats->angle_max,
             sample.agc,
             stats->agc_min,
             stats->agc_max,
