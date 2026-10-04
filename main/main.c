@@ -78,7 +78,6 @@ static adc_channel_t joy_y_channel;
 static int joy_x_center = 2048;
 static int joy_y_center = 2048;
 
-static uint16_t sequence = 0;
 
 
 // Broadcast keeps initial setup very simple.
@@ -206,42 +205,23 @@ static void joystick_mix(float x, float y,
 
 static void enter_deep_sleep(void)
 {
-    ESP_LOGI(TAG, "Sleep requested");
-
-    /*
-     * Wait for the button to be RELEASED before enabling
-     * active-low wake. Otherwise we'd immediately wake again.
-     */
-    while (gpio_get_level(BUTTON_GPIO) == 0) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(100));
-
     ESP_LOGI(TAG, "Entering deep sleep");
 
     /*
-     * GPIO4 is used as active-low wake source.
+     * No GPIO wake source is configured here: GPIO4 is now the
+     * three-position analogue selector, not the old pushbutton.
+     *
+     * The final inactivity/low-battery policy will configure the
+     * appropriate periodic wake source before calling this helper.
      */
-    ESP_ERROR_CHECK(
-        esp_deep_sleep_enable_gpio_wakeup(
-            1ULL << BUTTON_GPIO,
-            ESP_GPIO_WAKEUP_GPIO_LOW
-        )
-    );
-
     esp_deep_sleep_start();
 }
-
 
 static void transmitter_task(void *arg)
 {
     rc_packet_t packet = {
         .magic = RC_MAGIC
     };
-
-    int button_previous = 1;
-    int64_t button_down_us = 0;
 
     while (1) {
 
@@ -310,47 +290,6 @@ static void transmitter_task(void *arg)
         }
 
 
-        /*
-         * Require ~0.7 s hold to switch off.
-         *
-         * This prevents accidentally sleeping the transmitter
-         * while pushing the joystick around.
-         */
-        int button = gpio_get_level(BUTTON_GPIO);
-
-        if (button == 0 && button_previous == 1) {
-            button_down_us = esp_timer_get_time();
-        }
-
-        if (button == 0 &&
-            button_down_us != 0 &&
-            (esp_timer_get_time() - button_down_us) > 700000) {
-
-            /*
-             * Send explicit zero command before sleeping.
-             */
-            packet.sequence++;
-            packet.left = 0;
-            packet.right = 0;
-            packet.flags = 1;
-
-            esp_now_send(
-                broadcast_addr,
-                (uint8_t *)&packet,
-                sizeof(packet)
-            );
-
-            vTaskDelay(pdMS_TO_TICKS(30));
-
-            enter_deep_sleep();
-        }
-
-        if (button == 1) {
-            button_down_us = 0;
-        }
-
-        button_previous = button;
-
         vTaskDelay(pdMS_TO_TICKS(RC_TX_PERIOD_MS));
     }
 }
@@ -368,21 +307,6 @@ static void transmitter_init(void)
     as5048b_sanity_init();
     return;
 #endif
-
-    /*
-     * Joystick pushbutton.
-     * Active LOW: switch connects GPIO to GND.
-     */
-    gpio_config_t button_cfg = {
-        .pin_bit_mask = 1ULL << BUTTON_GPIO,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-
-    ESP_ERROR_CHECK(gpio_config(&button_cfg));
-
 
     /*
      * Create ADC1 oneshot unit.
