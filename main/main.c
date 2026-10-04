@@ -321,21 +321,6 @@ static float speed_scale_from_raw(int raw)
 }
 
 
-/*
- * Throttle-dependent skid-steer mixer.
- *
- * At zero throttle:
- *   full steering -> equal/opposite wheel commands for a pivot turn.
- *
- * At full throttle:
- *   the outside wheel remains at full throttle and the inside wheel
- *   is reduced by TURN_INNER_REDUCTION_FULL_THROTTLE.
- *
- * Between those points the differential authority is blended
- * continuously. Steering sign is independent of travel direction,
- * so steering right rotates the vehicle right in both forward and
- * reverse.
- */
 static void skid_steer_mix(float steering,
                            float throttle,
                            float *left,
@@ -351,27 +336,18 @@ static void skid_steer_mix(float steering,
     if (reduction < 0.0f) reduction = 0.0f;
     if (reduction > 1.0f) reduction = 1.0f;
 
-    /*
-     * Mean wheel speed falls slightly with steering at high throttle
-     * so that one wheel stays at the requested throttle while the
-     * other is retarded, rather than boosting the outer wheel.
-     */
     float mean =
         throttle * (1.0f - 0.5f * reduction * steer_mag);
 
-    /*
-     * Differential term:
-     *   |throttle|=0 -> full pivot authority
-     *   |throttle|=1 -> only half the configured retard differential
-     *                   is required to obtain [1, 1-reduction].
-     *
-     * Right/clockwise steering is negative. Negating steering makes
-     * right steering produce L > R, i.e. clockwise yaw.
-     */
     float differential_gain =
         (1.0f - throttle_mag) +
         throttle_mag * (0.5f * reduction);
 
+    /*
+     * Steering right / clockwise is negative. Negating it here makes
+     * right steering produce L > R, i.e. clockwise yaw, regardless
+     * of whether the vehicle is moving forward or reverse.
+     */
     float differential =
         -steering * differential_gain;
 
@@ -560,6 +536,7 @@ static void status_task(void *arg)
         }
 
         uint8_t red, green, blue;
+
         battery_colour(
             battery_mv,
             &red,
@@ -645,13 +622,6 @@ static void transmitter_task(void *arg)
                 &left,
                 &right
             );
-        } else {
-            ESP_LOGW(
-                TAG,
-                "Control sensor invalid: steer=%s throttle=%s",
-                esp_err_to_name(steering_err),
-                esp_err_to_name(throttle_err)
-            );
         }
 
         float speed = speed_scale_from_raw(speed_raw);
@@ -690,11 +660,6 @@ static void transmitter_task(void *arg)
 
         int64_t now = esp_timer_get_time();
 
-        /*
-         * Holding either principal control away from neutral is active
-         * use, even if it has not moved recently. Speed-pot or selector
-         * changes also reset the inactivity timer.
-         */
         if (steering != 0.0f ||
             throttle != 0.0f ||
             abs(speed_raw - previous_speed_raw) >= TX_WAKE_SPEED_COUNTS ||
@@ -711,9 +676,6 @@ static void transmitter_task(void *arg)
 
             ESP_LOGI(TAG, "Transmitter inactive; entering deep sleep");
 
-            /*
-             * Send an explicit stop command before disappearing.
-             */
             packet.sequence++;
             packet.left = 0;
             packet.right = 0;
@@ -820,7 +782,6 @@ static void transmitter_init(void)
 #endif
 
     transmitter_adc_init();
-
     status_led_init();
 
     int battery_mv = read_battery_mv();
@@ -935,308 +896,14 @@ static void transmitter_init(void)
     );
 }
 
-
-/* ============================================================
- * RECEIVER
- * ============================================================ */    return 1.0f;
-#endif
-}
-
-
-static void joystick_mix(float x, float y,
-                         float *left, float *right)
-{
-    /*
-     * Arcade -> tank mixing:
-     *
-     * forward       L+, R+
-     * reverse       L-, R-
-     * right turn    L+, R-
-     * left turn     L-, R+
-     */
-    float l = y + x;
-    float r = y - x;
-
-    // Preserve ratio but ensure neither exceeds magnitude 1.
-    float maximum = fmaxf(fabsf(l), fabsf(r));
-
-    if (maximum > 1.0f) {
-        l /= maximum;
-        r /= maximum;
-    }
-
-    *left = l;
-    *right = r;
-}
-
-
-static void transmitter_task(void *arg)
-{
-    rc_packet_t packet = {
-        .magic = RC_MAGIC
-    };
-
-    while (1) {
-
-        int x_raw = adc_read_channel(joy_x_channel);
-        int y_raw = adc_read_channel(joy_y_channel);
-        
-        float x = joystick_axis(x_raw, joy_x_center);
-        float y = joystick_axis(y_raw, joy_y_center);
-
-        /*
-         * Depending on physical KY-023 orientation, uncomment
-         * either/both of these after the first bench test.
-         */
-         x = -x;
-         y = -y;
-
-        float left, right;
-        joystick_mix(x, y, &left, &right);
-
-        float speed = read_speed_scale();
-
-        left  *= speed;
-        right *= speed;
-
-        packet.sequence++;
-        packet.left  = (int16_t)lroundf(left  * 1000.0f);
-        packet.right = (int16_t)lroundf(right * 1000.0f);
-        packet.speed = (uint16_t)lroundf(speed * 1000.0f);
-
-        if (!espnow_send_pending) {
-
-            espnow_send_pending = true;
-
-            esp_err_t err = esp_now_send(
-                broadcast_addr,
-                (uint8_t *)&packet,
-                sizeof(packet)
-            );
-
-            if (err != ESP_OK) {
-                espnow_send_pending = false;
-
-                ESP_LOGW(
-                    TAG,
-                    "esp_now_send: %s",
-                    esp_err_to_name(err)
-                );
-            }
-        }
-
-        static int log_div = 0;
-
-        if (++log_div >= 20) {
-            log_div = 0;
-
-            ESP_LOGI(TAG,
-                    "ADC X=%4d Y=%4d | axis X=%+.3f Y=%+.3f | "
-                    "speed=%.3f | L=%+.3f R=%+.3f",
-                    x_raw,
-                    y_raw,
-                    x,
-                    y,
-                    speed,
-                    left,
-                    right);
-        }
-
-
-        vTaskDelay(pdMS_TO_TICKS(RC_TX_PERIOD_MS));
-    }
-}
-
-
-static void transmitter_init(void)
-{
-    ESP_LOGI(TAG, "Starting TRANSMITTER");
-
-#if AS5048B_SANITY_TEST
-    /*
-     * Bench-test mode only: validate the two magnetic sensors
-     * without starting joystick ADC handling, Wi-Fi or ESP-NOW.
-     */
-    as5048b_sanity_init();
-    return;
-#endif
-
-    /*
-     * Create ADC1 oneshot unit.
-     */
-    adc_oneshot_unit_init_cfg_t adc_cfg = {
-        .unit_id = ADC_UNIT_1
-    };
-
-    ESP_ERROR_CHECK(
-        adc_oneshot_new_unit(&adc_cfg, &adc_handle)
-    );
-
-
-    /*
-     * Common configuration for all three analogue inputs.
-     */
-    adc_oneshot_chan_cfg_t chan_cfg = {
-        .atten = ADC_ATTEN_DB_12,
-        .bitwidth = ADC_BITWIDTH_DEFAULT
-    };
-
-    adc_unit_t unit;
-
-
-    /*
-     * Joystick X.
-     */
-    ESP_ERROR_CHECK(
-        adc_oneshot_io_to_channel(
-            JOY_X_GPIO,
-            &unit,
-            &joy_x_channel
-        )
-    );
-
-    if (unit != ADC_UNIT_1) {
-        ESP_LOGE(TAG, "JOY_X_GPIO is not on ADC1");
-        abort();
-    }
-
-    ESP_ERROR_CHECK(
-        adc_oneshot_config_channel(
-            adc_handle,
-            joy_x_channel,
-            &chan_cfg
-        )
-    );
-
-
-    /*
-     * Joystick Y.
-     */
-    ESP_ERROR_CHECK(
-        adc_oneshot_io_to_channel(
-            JOY_Y_GPIO,
-            &unit,
-            &joy_y_channel
-        )
-    );
-
-    if (unit != ADC_UNIT_1) {
-        ESP_LOGE(TAG, "JOY_Y_GPIO is not on ADC1");
-        abort();
-    }
-
-    ESP_ERROR_CHECK(
-        adc_oneshot_config_channel(
-            adc_handle,
-            joy_y_channel,
-            &chan_cfg
-        )
-    );
-
-
-#if USE_SPEED_POT
-
-    /*
-     * Speed-limit potentiometer.
-     */
-    ESP_ERROR_CHECK(
-        adc_oneshot_io_to_channel(
-            SPEED_GPIO,
-            &unit,
-            &speed_channel
-        )
-    );
-
-    if (unit != ADC_UNIT_1) {
-        ESP_LOGE(TAG, "SPEED_GPIO is not on ADC1");
-        abort();
-    }
-
-    ESP_ERROR_CHECK(
-        adc_oneshot_config_channel(
-            adc_handle,
-            speed_channel,
-            &chan_cfg
-        )
-    );
-
-#endif
-
-
-    /*
-     * Calibrate joystick centre.
-     *
-     * Stick must be released/centred during startup.
-     */
-    ESP_LOGI(TAG, "Calibrating joystick centre...");
-
-    vTaskDelay(pdMS_TO_TICKS(300));
-
-    joy_x_center =
-        adc_average_channel(joy_x_channel, 64);
-
-    joy_y_center =
-        adc_average_channel(joy_y_channel, 64);
-
-    ESP_LOGI(
-        TAG,
-        "Joystick centre X=%d Y=%d",
-        joy_x_center,
-        joy_y_center
-    );
-
-
-    /*
-     * Start Wi-Fi radio and ESP-NOW.
-     */
-    wifi_init();
-
-    ESP_ERROR_CHECK(esp_now_init());
-
-    ESP_ERROR_CHECK(
-        esp_now_register_send_cb(send_cb)
-    );
-
-    /*
-     * For initial bring-up we're broadcasting rather than
-     * pairing to the receiver's MAC.
-     */
-    esp_now_peer_info_t peer = {0};
-
-    memcpy(
-        peer.peer_addr,
-        broadcast_addr,
-        ESP_NOW_ETH_ALEN
-    );
-
-    peer.channel = RC_WIFI_CHANNEL;
-    peer.ifidx = WIFI_IF_STA;
-    peer.encrypt = false;
-
-    ESP_ERROR_CHECK(
-        esp_now_add_peer(&peer)
-    );
-
-
-    /*
-     * Start the 100-Hz controller task.
-     */
-    xTaskCreate(
-        transmitter_task,
-        "transmitter",
-        4096,
-        NULL,
-        5,
-        NULL
-    );
-}
-
-
 /* ============================================================
  * RECEIVER
  * ============================================================ */
 
 #else
+
+static const uint8_t tx_mac[ESP_NOW_ETH_ALEN] = RC_TX_MAC_INIT;
+static const uint8_t rx_mac[ESP_NOW_ETH_ALEN] = RC_RX_MAC_INIT;
 
 static QueueHandle_t packet_queue;
 
@@ -1339,10 +1006,15 @@ static void recv_cb(const esp_now_recv_info_t *info,
         return;
     }
 
+    if (memcmp(info->src_addr, tx_mac, ESP_NOW_ETH_ALEN) != 0) {
+        return;
+    }
+
     rc_packet_t packet;
     memcpy(&packet, data, sizeof(packet));
 
-    if (packet.magic != RC_MAGIC) {
+    if (packet.magic != RC_MAGIC ||
+        packet.type != RC_MSG_CONTROL) {
         return;
     }
 
@@ -1389,6 +1061,27 @@ static void motor_task(void *arg)
                 pdMS_TO_TICKS(10))) {
 
             set_motors(packet.left, packet.right);
+
+            rc_ack_t ack = {
+                .magic = RC_MAGIC,
+                .sequence = packet.sequence,
+                .type = RC_MSG_ACK
+            };
+
+            esp_err_t ack_err = esp_now_send(
+                tx_mac,
+                (uint8_t *)&ack,
+                sizeof(ack)
+            );
+
+            if (ack_err != ESP_OK) {
+                ESP_LOGW(
+                    TAG,
+                    "ACK send failed: %s",
+                    esp_err_to_name(ack_err)
+                );
+            }
+
             failsafe_active = false;
             if (rx_failsafe_active) {
                 ESP_LOGI(TAG, "RX link active");
@@ -1489,10 +1182,49 @@ static void receiver_init(void)
 
     wifi_init();
 
+    uint8_t actual_mac[ESP_NOW_ETH_ALEN] = {0};
+    ESP_ERROR_CHECK(
+        esp_wifi_get_mac(WIFI_IF_STA, actual_mac)
+    );
+
+    ESP_LOGI(
+        TAG,
+        "RX STA MAC %02X:%02X:%02X:%02X:%02X:%02X",
+        actual_mac[0], actual_mac[1], actual_mac[2],
+        actual_mac[3], actual_mac[4], actual_mac[5]
+    );
+
+    if (memcmp(actual_mac, rx_mac, ESP_NOW_ETH_ALEN) != 0) {
+        ESP_LOGW(TAG, "RX MAC does not match configured board");
+    }
+
     ESP_ERROR_CHECK(esp_now_init());
+
+    esp_now_peer_info_t peer = {0};
+
+    memcpy(
+        peer.peer_addr,
+        tx_mac,
+        ESP_NOW_ETH_ALEN
+    );
+
+    peer.channel = RC_WIFI_CHANNEL;
+    peer.ifidx = WIFI_IF_STA;
+    peer.encrypt = false;
+
+    ESP_ERROR_CHECK(
+        esp_now_add_peer(&peer)
+    );
 
     ESP_ERROR_CHECK(
         esp_now_register_recv_cb(recv_cb)
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Paired TX %02X:%02X:%02X:%02X:%02X:%02X",
+        tx_mac[0], tx_mac[1], tx_mac[2],
+        tx_mac[3], tx_mac[4], tx_mac[5]
     );
 
 
