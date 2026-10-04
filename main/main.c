@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
+#include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -13,6 +15,7 @@
 #include "esp_now.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
 
 #include "nvs_flash.h"
 
@@ -20,20 +23,36 @@
 #include "driver/ledc.h"
 
 #include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 
 #include "rc_config.h"
 #include "as5048b_sanity.h"
+#include "as5048b_controls.h"
+#include "status_led.h"
 
 static const char *TAG = "RC";
+
+enum {
+    RC_MSG_CONTROL = 1,
+    RC_MSG_ACK = 2
+};
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint16_t sequence;
+    uint8_t type;
     int16_t left;       // -1000 ... +1000
     int16_t right;      // -1000 ... +1000
     uint16_t speed;     // 0 ... 1000
     uint8_t flags;
 } rc_packet_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint16_t sequence;
+    uint8_t type;
+} rc_ack_t;
 
 
 /* ============================================================
@@ -64,34 +83,34 @@ static void wifi_init(void)
 
 #if RC_TRANSMITTER
 
-static volatile bool espnow_send_pending = false;
+#define TX_RTC_MAGIC 0x52544331UL
 
-static adc_oneshot_unit_handle_t adc_handle;
-
-static adc_channel_t joy_x_channel;
-static adc_channel_t joy_y_channel;
-
-#if USE_SPEED_POT
-    static adc_channel_t speed_channel;
-#endif
-
-static int joy_x_center = 2048;
-static int joy_y_center = 2048;
-
-
-
-// Broadcast keeps initial setup very simple.
-// We can switch to receiver-specific MAC addressing later.
-static const uint8_t broadcast_addr[ESP_NOW_ETH_ALEN] = {
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+enum {
+    TX_SLEEP_NONE = 0,
+    TX_SLEEP_INACTIVITY = 1,
+    TX_SLEEP_LOW_BATTERY = 2
 };
 
-static void send_cb(
-    const wifi_tx_info_t *tx_info,
-    esp_now_send_status_t status)
-{
-    espnow_send_pending = false;
-}
+static const uint8_t tx_mac[ESP_NOW_ETH_ALEN] = RC_TX_MAC_INIT;
+static const uint8_t rx_mac[ESP_NOW_ETH_ALEN] = RC_RX_MAC_INIT;
+
+static volatile bool espnow_send_pending = false;
+static volatile int64_t last_ack_us = 0;
+static volatile uint16_t last_ack_sequence = 0;
+
+static adc_oneshot_unit_handle_t adc_handle = NULL;
+static adc_cali_handle_t battery_cali_handle = NULL;
+static adc_channel_t battery_channel;
+static adc_channel_t speed_channel;
+static adc_channel_t mode_switch_channel;
+
+RTC_DATA_ATTR static uint32_t rtc_magic = 0;
+RTC_DATA_ATTR static uint8_t rtc_sleep_reason = TX_SLEEP_NONE;
+RTC_DATA_ATTR static uint16_t rtc_steering_raw = 0;
+RTC_DATA_ATTR static uint16_t rtc_throttle_raw = 0;
+RTC_DATA_ATTR static uint16_t rtc_speed_raw = 0;
+RTC_DATA_ATTR static int8_t rtc_mode_position = 0;
+
 
 static int adc_read_channel(adc_channel_t channel)
 {
@@ -111,57 +130,186 @@ static int adc_average_channel(adc_channel_t channel, int samples)
 
     for (int i = 0; i < samples; i++) {
         total += adc_read_channel(channel);
-        vTaskDelay(pdMS_TO_TICKS(2));
     }
 
     return (int)(total / samples);
 }
 
 
-/*
- * Convert ADC reading into approximately -1 ... +1 using
- * the measured centre point.
- *
- * Separate scaling either side of centre compensates for
- * imperfect joystick centring.
- */
-static float joystick_axis(int raw, int center)
+static void adc_channel_init(int gpio,
+                             adc_channel_t *channel,
+                             const adc_oneshot_chan_cfg_t *cfg,
+                             const char *name)
 {
-    float value;
+    adc_unit_t unit;
 
-    if (raw >= center) {
-        value = (float)(raw - center) /
-                (float)(4095 - center);
-    } else {
-        value = (float)(raw - center) /
-                (float)center;
+    ESP_ERROR_CHECK(
+        adc_oneshot_io_to_channel(
+            gpio,
+            &unit,
+            channel
+        )
+    );
+
+    if (unit != ADC_UNIT_1) {
+        ESP_LOGE(TAG, "%s GPIO%d is not on ADC1", name, gpio);
+        abort();
     }
 
-    if (value > 1.0f)  value = 1.0f;
-    if (value < -1.0f) value = -1.0f;
-
-    /*
-     * Deadband around centre, followed by rescaling so that
-     * the usable range still runs continuously from 0 to 1.
-     */
-    float a = fabsf(value);
-
-    if (a <= JOYSTICK_DEADBAND) {
-        return 0.0f;
-    }
-
-    a = (a - JOYSTICK_DEADBAND) /
-        (1.0f - JOYSTICK_DEADBAND);
-
-    return copysignf(a, value);
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc_handle,
+            *channel,
+            cfg
+        )
+    );
 }
 
 
-static float read_speed_scale(void)
+static void transmitter_adc_init(void)
 {
-#if USE_SPEED_POT
-    int raw = adc_read_channel(speed_channel);
+    adc_oneshot_unit_init_cfg_t adc_cfg = {
+        .unit_id = ADC_UNIT_1
+    };
 
+    ESP_ERROR_CHECK(
+        adc_oneshot_new_unit(&adc_cfg, &adc_handle)
+    );
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT
+    };
+
+    adc_channel_init(
+        BATTERY_GPIO,
+        &battery_channel,
+        &chan_cfg,
+        "Battery"
+    );
+
+    adc_channel_init(
+        SPEED_GPIO,
+        &speed_channel,
+        &chan_cfg,
+        "Speed pot"
+    );
+
+    adc_channel_init(
+        MODE_SWITCH_GPIO,
+        &mode_switch_channel,
+        &chan_cfg,
+        "Mode switch"
+    );
+
+    adc_cali_curve_fitting_config_t cali_cfg = {
+        .unit_id = ADC_UNIT_1,
+        .chan = battery_channel,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT
+    };
+
+    ESP_ERROR_CHECK(
+        adc_cali_create_scheme_curve_fitting(
+            &cali_cfg,
+            &battery_cali_handle
+        )
+    );
+}
+
+
+static int read_battery_mv(void)
+{
+    int raw = adc_average_channel(battery_channel, 32);
+    int adc_mv = 0;
+
+    ESP_ERROR_CHECK(
+        adc_cali_raw_to_voltage(
+            battery_cali_handle,
+            raw,
+            &adc_mv
+        )
+    );
+
+    int64_t battery_mv =
+        (int64_t)adc_mv *
+        (BATTERY_DIVIDER_TOP_OHMS +
+         BATTERY_DIVIDER_BOTTOM_OHMS);
+
+    battery_mv =
+        (battery_mv + BATTERY_DIVIDER_BOTTOM_OHMS / 2) /
+        BATTERY_DIVIDER_BOTTOM_OHMS;
+
+    return (int)battery_mv;
+}
+
+
+static int mode_switch_position_from_raw(int raw)
+{
+    if (raw <= MODE_SWITCH_ADC_LOW_MAX) {
+        return -1;
+    }
+
+    if (raw >= MODE_SWITCH_ADC_HIGH_MIN) {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+static float steering_from_raw(uint16_t raw)
+{
+    float value;
+
+    if (raw < STEERING_DEADBAND_LOW) {
+        value =
+            -(float)(STEERING_DEADBAND_LOW - raw) /
+            (float)(STEERING_DEADBAND_LOW - STEERING_RAW_MIN);
+    } else if (raw > STEERING_DEADBAND_HIGH) {
+        value =
+            (float)(raw - STEERING_DEADBAND_HIGH) /
+            (float)(STEERING_RAW_MAX - STEERING_DEADBAND_HIGH);
+    } else {
+        value = 0.0f;
+    }
+
+    if (value < -1.0f) value = -1.0f;
+    if (value >  1.0f) value =  1.0f;
+
+#if STEERING_INVERT
+    value = -value;
+#endif
+
+    return value;
+}
+
+
+static float throttle_from_raw(uint16_t raw)
+{
+    float value;
+
+    if (raw < THROTTLE_NEUTRAL_LOW) {
+        value =
+            (float)(THROTTLE_NEUTRAL_LOW - raw) /
+            (float)THROTTLE_COUNTS_PER_UNIT;
+    } else if (raw > THROTTLE_NEUTRAL_HIGH) {
+        value =
+            -(float)(raw - THROTTLE_NEUTRAL_HIGH) /
+            (float)THROTTLE_COUNTS_PER_UNIT;
+    } else {
+        value = 0.0f;
+    }
+
+    if (value >  1.0f) value =  1.0f;
+    if (value < -1.0f) value = -1.0f;
+
+    return value;
+}
+
+
+static float speed_scale_from_raw(int raw)
+{
     float p =
         (float)(raw - SPEED_POT_ADC_MIN) /
         (float)(SPEED_POT_ADC_MAX - SPEED_POT_ADC_MIN);
@@ -170,8 +318,627 @@ static float read_speed_scale(void)
     if (p > 1.0f) p = 1.0f;
 
     return SPEED_MIN + p * (1.0f - SPEED_MIN);
-#else
-    return 1.0f;
+}
+
+
+/*
+ * Throttle-dependent skid-steer mixer.
+ *
+ * At zero throttle:
+ *   full steering -> equal/opposite wheel commands for a pivot turn.
+ *
+ * At full throttle:
+ *   the outside wheel remains at full throttle and the inside wheel
+ *   is reduced by TURN_INNER_REDUCTION_FULL_THROTTLE.
+ *
+ * Between those points the differential authority is blended
+ * continuously. Steering sign is independent of travel direction,
+ * so steering right rotates the vehicle right in both forward and
+ * reverse.
+ */
+static void skid_steer_mix(float steering,
+                           float throttle,
+                           float *left,
+                           float *right)
+{
+    float steer_mag = fabsf(steering);
+    float throttle_mag = fabsf(throttle);
+    float reduction = TURN_INNER_REDUCTION_FULL_THROTTLE;
+
+    if (steer_mag > 1.0f) steer_mag = 1.0f;
+    if (throttle_mag > 1.0f) throttle_mag = 1.0f;
+
+    if (reduction < 0.0f) reduction = 0.0f;
+    if (reduction > 1.0f) reduction = 1.0f;
+
+    /*
+     * Mean wheel speed falls slightly with steering at high throttle
+     * so that one wheel stays at the requested throttle while the
+     * other is retarded, rather than boosting the outer wheel.
+     */
+    float mean =
+        throttle * (1.0f - 0.5f * reduction * steer_mag);
+
+    /*
+     * Differential term:
+     *   |throttle|=0 -> full pivot authority
+     *   |throttle|=1 -> only half the configured retard differential
+     *                   is required to obtain [1, 1-reduction].
+     *
+     * Right/clockwise steering is negative. Negating steering makes
+     * right steering produce L > R, i.e. clockwise yaw.
+     */
+    float differential_gain =
+        (1.0f - throttle_mag) +
+        throttle_mag * (0.5f * reduction);
+
+    float differential =
+        -steering * differential_gain;
+
+    float l = mean + differential;
+    float r = mean - differential;
+
+    if (l >  1.0f) l =  1.0f;
+    if (l < -1.0f) l = -1.0f;
+    if (r >  1.0f) r =  1.0f;
+    if (r < -1.0f) r = -1.0f;
+
+    *left = l;
+    *right = r;
+}
+
+
+static void battery_colour(int battery_mv,
+                           uint8_t *red,
+                           uint8_t *green,
+                           uint8_t *blue)
+{
+    *blue = 0;
+
+    if (battery_mv <= BATTERY_LED_RED_MV) {
+        *red = 255;
+        *green = 0;
+        return;
+    }
+
+    if (battery_mv < BATTERY_LED_YELLOW_MV) {
+        int span = BATTERY_LED_YELLOW_MV - BATTERY_LED_RED_MV;
+        int pos = battery_mv - BATTERY_LED_RED_MV;
+
+        *red = 255;
+        *green = (uint8_t)((255 * pos) / span);
+        return;
+    }
+
+    if (battery_mv < BATTERY_LED_GREEN_MV) {
+        int span = BATTERY_LED_GREEN_MV - BATTERY_LED_YELLOW_MV;
+        int pos = battery_mv - BATTERY_LED_YELLOW_MV;
+
+        *red = (uint8_t)(255 - (255 * pos) / span);
+        *green = 255;
+        return;
+    }
+
+    *red = 0;
+    *green = 255;
+}
+
+
+static void enter_timed_sleep(uint8_t reason,
+                              uint32_t sleep_ms,
+                              uint16_t steering_raw,
+                              uint16_t throttle_raw,
+                              uint16_t speed_raw,
+                              int mode_position)
+{
+    status_led_off();
+
+    rtc_magic = TX_RTC_MAGIC;
+    rtc_sleep_reason = reason;
+    rtc_steering_raw = steering_raw;
+    rtc_throttle_raw = throttle_raw;
+    rtc_speed_raw = speed_raw;
+    rtc_mode_position = (int8_t)mode_position;
+
+    ESP_ERROR_CHECK(
+        esp_sleep_enable_timer_wakeup(
+            (uint64_t)sleep_ms * 1000ULL
+        )
+    );
+
+    esp_deep_sleep_start();
+}
+
+
+static void low_battery_warning_and_sleep(int battery_mv,
+                                          bool show_warning)
+{
+    ESP_LOGW(
+        TAG,
+        "Battery low: %d mV; wireless will not start",
+        battery_mv
+    );
+
+    if (show_warning) {
+        int64_t end_us =
+            esp_timer_get_time() +
+            (int64_t)LOW_BATTERY_WARNING_MS * 1000LL;
+
+        while (esp_timer_get_time() < end_us) {
+            status_led_set_rgb(255, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_ON_MS));
+            status_led_off();
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_OFF_MS));
+        }
+    }
+
+    enter_timed_sleep(
+        TX_SLEEP_LOW_BATTERY,
+        LOW_BATTERY_RECHECK_MS,
+        0,
+        0,
+        0,
+        0
+    );
+}
+
+
+static bool controls_moved_since_sleep(uint16_t steering_raw,
+                                       uint16_t throttle_raw,
+                                       uint16_t speed_raw,
+                                       int mode_position)
+{
+    if (abs((int)steering_raw - (int)rtc_steering_raw) >=
+        TX_WAKE_STEERING_COUNTS) {
+        return true;
+    }
+
+    if (abs((int)throttle_raw - (int)rtc_throttle_raw) >=
+        TX_WAKE_THROTTLE_COUNTS) {
+        return true;
+    }
+
+    if (abs((int)speed_raw - (int)rtc_speed_raw) >=
+        TX_WAKE_SPEED_COUNTS) {
+        return true;
+    }
+
+    if (mode_position != rtc_mode_position) {
+        return true;
+    }
+
+    return false;
+}
+
+
+static void send_cb(const wifi_tx_info_t *tx_info,
+                    esp_now_send_status_t status)
+{
+    (void)tx_info;
+    (void)status;
+    espnow_send_pending = false;
+}
+
+
+static void tx_recv_cb(const esp_now_recv_info_t *info,
+                       const uint8_t *data,
+                       int len)
+{
+    if (len != sizeof(rc_ack_t)) {
+        return;
+    }
+
+    if (memcmp(info->src_addr, rx_mac, ESP_NOW_ETH_ALEN) != 0) {
+        return;
+    }
+
+    rc_ack_t ack;
+    memcpy(&ack, data, sizeof(ack));
+
+    if (ack.magic != RC_MAGIC || ack.type != RC_MSG_ACK) {
+        return;
+    }
+
+    last_ack_sequence = ack.sequence;
+    last_ack_us = esp_timer_get_time();
+}
+
+
+static void status_task(void *arg)
+{
+    (void)arg;
+
+    int battery_mv = read_battery_mv();
+    int64_t last_battery_read_us = esp_timer_get_time();
+
+    while (1) {
+        int64_t now = esp_timer_get_time();
+
+        if ((now - last_battery_read_us) >= 1000000LL) {
+            battery_mv = read_battery_mv();
+            last_battery_read_us = now;
+        }
+
+        uint8_t red, green, blue;
+        battery_colour(
+            battery_mv,
+            &red,
+            &green,
+            &blue
+        );
+
+        bool linked =
+            last_ack_us != 0 &&
+            (now - last_ack_us) <=
+                ((int64_t)RC_LINK_TIMEOUT_MS * 1000LL);
+
+        if (linked) {
+            status_led_set_rgb(red, green, blue);
+        } else {
+            uint32_t cycle_ms =
+                STATUS_LED_ON_MS + STATUS_LED_OFF_MS;
+
+            uint32_t phase_ms =
+                (uint32_t)((now / 1000LL) % cycle_ms);
+
+            if (phase_ms < STATUS_LED_ON_MS) {
+                status_led_set_rgb(red, green, blue);
+            } else {
+                status_led_off();
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+
+static void transmitter_task(void *arg)
+{
+    (void)arg;
+
+    rc_packet_t packet = {
+        .magic = RC_MAGIC,
+        .type = RC_MSG_CONTROL
+    };
+
+    int64_t last_activity_us = esp_timer_get_time();
+    int previous_speed_raw = adc_read_channel(speed_channel);
+    int previous_mode_position =
+        mode_switch_position_from_raw(
+            adc_read_channel(mode_switch_channel)
+        );
+
+    while (1) {
+        rc_as5048b_sample_t steering_sample = {0};
+        rc_as5048b_sample_t throttle_sample = {0};
+
+        esp_err_t steering_err =
+            rc_as5048b_read_steering(&steering_sample);
+
+        esp_err_t throttle_err =
+            rc_as5048b_read_throttle(&throttle_sample);
+
+        int speed_raw = adc_read_channel(speed_channel);
+        int mode_raw = adc_read_channel(mode_switch_channel);
+        int mode_position =
+            mode_switch_position_from_raw(mode_raw);
+
+        bool controls_valid =
+            steering_err == ESP_OK &&
+            throttle_err == ESP_OK &&
+            rc_as5048b_sample_valid(&steering_sample) &&
+            rc_as5048b_sample_valid(&throttle_sample);
+
+        float steering = 0.0f;
+        float throttle = 0.0f;
+        float left = 0.0f;
+        float right = 0.0f;
+
+        if (controls_valid) {
+            steering = steering_from_raw(steering_sample.angle);
+            throttle = throttle_from_raw(throttle_sample.angle);
+
+            skid_steer_mix(
+                steering,
+                throttle,
+                &left,
+                &right
+            );
+        } else {
+            ESP_LOGW(
+                TAG,
+                "Control sensor invalid: steer=%s throttle=%s",
+                esp_err_to_name(steering_err),
+                esp_err_to_name(throttle_err)
+            );
+        }
+
+        float speed = speed_scale_from_raw(speed_raw);
+
+        left *= speed;
+        right *= speed;
+
+        packet.sequence++;
+        packet.left =
+            (int16_t)lroundf(left * 1000.0f);
+        packet.right =
+            (int16_t)lroundf(right * 1000.0f);
+        packet.speed =
+            (uint16_t)lroundf(speed * 1000.0f);
+        packet.flags = controls_valid ? 0 : 1;
+
+        if (!espnow_send_pending) {
+            espnow_send_pending = true;
+
+            esp_err_t err = esp_now_send(
+                rx_mac,
+                (uint8_t *)&packet,
+                sizeof(packet)
+            );
+
+            if (err != ESP_OK) {
+                espnow_send_pending = false;
+
+                ESP_LOGW(
+                    TAG,
+                    "esp_now_send: %s",
+                    esp_err_to_name(err)
+                );
+            }
+        }
+
+        int64_t now = esp_timer_get_time();
+
+        /*
+         * Holding either principal control away from neutral is active
+         * use, even if it has not moved recently. Speed-pot or selector
+         * changes also reset the inactivity timer.
+         */
+        if (steering != 0.0f ||
+            throttle != 0.0f ||
+            abs(speed_raw - previous_speed_raw) >= TX_WAKE_SPEED_COUNTS ||
+            mode_position != previous_mode_position) {
+
+            last_activity_us = now;
+        }
+
+        previous_speed_raw = speed_raw;
+        previous_mode_position = mode_position;
+
+        if ((now - last_activity_us) >=
+            ((int64_t)TX_INACTIVITY_SLEEP_MS * 1000LL)) {
+
+            ESP_LOGI(TAG, "Transmitter inactive; entering deep sleep");
+
+            /*
+             * Send an explicit stop command before disappearing.
+             */
+            packet.sequence++;
+            packet.left = 0;
+            packet.right = 0;
+            packet.flags = 1;
+
+            esp_now_send(
+                rx_mac,
+                (uint8_t *)&packet,
+                sizeof(packet)
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(30));
+
+            enter_timed_sleep(
+                TX_SLEEP_INACTIVITY,
+                TX_SLEEP_POLL_MS,
+                steering_sample.angle,
+                throttle_sample.angle,
+                speed_raw,
+                mode_position
+            );
+        }
+
+        static int log_div = 0;
+
+        if (++log_div >= 20) {
+            log_div = 0;
+
+            bool linked =
+                last_ack_us != 0 &&
+                (now - last_ack_us) <=
+                    ((int64_t)RC_LINK_TIMEOUT_MS * 1000LL);
+
+            ESP_LOGI(
+                TAG,
+                "steer=%+.3f throttle=%+.3f speed=%.3f | "
+                "L=%+.3f R=%+.3f | mode=%d | link=%s ack=%u",
+                steering,
+                throttle,
+                speed,
+                left,
+                right,
+                mode_position,
+                linked ? "OK" : "WAIT",
+                (unsigned)last_ack_sequence
+            );
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(RC_TX_PERIOD_MS));
+    }
+}
+
+
+static void add_espnow_peer(const uint8_t *peer_mac)
+{
+    esp_now_peer_info_t peer = {0};
+
+    memcpy(
+        peer.peer_addr,
+        peer_mac,
+        ESP_NOW_ETH_ALEN
+    );
+
+    peer.channel = RC_WIFI_CHANNEL;
+    peer.ifidx = WIFI_IF_STA;
+    peer.encrypt = false;
+
+    ESP_ERROR_CHECK(
+        esp_now_add_peer(&peer)
+    );
+}
+
+
+static void log_local_mac(const char *role,
+                          const uint8_t *expected)
+{
+    uint8_t actual[ESP_NOW_ETH_ALEN] = {0};
+
+    ESP_ERROR_CHECK(
+        esp_wifi_get_mac(WIFI_IF_STA, actual)
+    );
+
+    ESP_LOGI(
+        TAG,
+        "%s STA MAC %02X:%02X:%02X:%02X:%02X:%02X",
+        role,
+        actual[0], actual[1], actual[2],
+        actual[3], actual[4], actual[5]
+    );
+
+    if (memcmp(actual, expected, ESP_NOW_ETH_ALEN) != 0) {
+        ESP_LOGW(TAG, "%s MAC does not match configured board", role);
+    }
+}
+
+
+static void transmitter_init(void)
+{
+    ESP_LOGI(TAG, "Starting TRANSMITTER");
+
+#if AS5048B_SANITY_TEST
+    as5048b_sanity_init();
+    return;
+#endif
+
+    transmitter_adc_init();
+
+    status_led_init();
+
+    int battery_mv = read_battery_mv();
+
+    esp_sleep_wakeup_cause_t wake_cause =
+        esp_sleep_get_wakeup_cause();
+
+    bool timer_wake =
+        wake_cause == ESP_SLEEP_WAKEUP_TIMER &&
+        rtc_magic == TX_RTC_MAGIC;
+
+    if (timer_wake &&
+        rtc_sleep_reason == TX_SLEEP_LOW_BATTERY) {
+
+        if (battery_mv < BATTERY_LOW_RECOVER_MV) {
+            low_battery_warning_and_sleep(
+                battery_mv,
+                false
+            );
+        }
+
+        rtc_sleep_reason = TX_SLEEP_NONE;
+    } else if (battery_mv < BATTERY_LOW_CUTOFF_MV) {
+        low_battery_warning_and_sleep(
+            battery_mv,
+            true
+        );
+    }
+
+    rc_as5048b_init();
+
+    if (timer_wake &&
+        rtc_sleep_reason == TX_SLEEP_INACTIVITY) {
+
+        rc_as5048b_sample_t steering_sample = {0};
+        rc_as5048b_sample_t throttle_sample = {0};
+
+        ESP_ERROR_CHECK(
+            rc_as5048b_read_steering(&steering_sample)
+        );
+
+        ESP_ERROR_CHECK(
+            rc_as5048b_read_throttle(&throttle_sample)
+        );
+
+        int speed_raw = adc_read_channel(speed_channel);
+        int mode_position =
+            mode_switch_position_from_raw(
+                adc_read_channel(mode_switch_channel)
+            );
+
+        if (!controls_moved_since_sleep(
+                steering_sample.angle,
+                throttle_sample.angle,
+                speed_raw,
+                mode_position)) {
+
+            enter_timed_sleep(
+                TX_SLEEP_INACTIVITY,
+                TX_SLEEP_POLL_MS,
+                rtc_steering_raw,
+                rtc_throttle_raw,
+                rtc_speed_raw,
+                rtc_mode_position
+            );
+        }
+
+        rtc_sleep_reason = TX_SLEEP_NONE;
+    }
+
+    rtc_magic = 0;
+    rtc_sleep_reason = TX_SLEEP_NONE;
+
+    wifi_init();
+    log_local_mac("TX", tx_mac);
+
+    ESP_ERROR_CHECK(esp_now_init());
+
+    ESP_ERROR_CHECK(
+        esp_now_register_send_cb(send_cb)
+    );
+
+    ESP_ERROR_CHECK(
+        esp_now_register_recv_cb(tx_recv_cb)
+    );
+
+    add_espnow_peer(rx_mac);
+
+    ESP_LOGI(
+        TAG,
+        "Paired RX %02X:%02X:%02X:%02X:%02X:%02X",
+        rx_mac[0], rx_mac[1], rx_mac[2],
+        rx_mac[3], rx_mac[4], rx_mac[5]
+    );
+
+    xTaskCreate(
+        transmitter_task,
+        "transmitter",
+        4096,
+        NULL,
+        5,
+        NULL
+    );
+
+    xTaskCreate(
+        status_task,
+        "status_led",
+        3072,
+        NULL,
+        4,
+        NULL
+    );
+}
+
+
+/* ============================================================
+ * RECEIVER
+ * ============================================================ */    return 1.0f;
 #endif
 }
 
