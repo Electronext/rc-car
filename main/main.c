@@ -249,18 +249,32 @@ static void transmitter_adc_init(void)
 }
 
 
-static int read_battery_mv(void)
+static esp_err_t read_battery_mv(int *battery_mv_out)
 {
-    int raw = adc_average_channel(battery_channel, 32);
+    int raw = 0;
+
+    esp_err_t err =
+        adc_average_channel(
+            battery_channel,
+            32,
+            &raw
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
     int adc_mv = 0;
 
-    ESP_ERROR_CHECK(
-        adc_cali_raw_to_voltage(
-            battery_cali_handle,
-            raw,
-            &adc_mv
-        )
+    err = adc_cali_raw_to_voltage(
+        battery_cali_handle,
+        raw,
+        &adc_mv
     );
+
+    if (err != ESP_OK) {
+        return err;
+    }
 
     int64_t battery_mv =
         (int64_t)adc_mv *
@@ -271,7 +285,9 @@ static int read_battery_mv(void)
         (battery_mv + BATTERY_DIVIDER_BOTTOM_OHMS / 2) /
         BATTERY_DIVIDER_BOTTOM_OHMS;
 
-    return (int)battery_mv;
+    *battery_mv_out = (int)battery_mv;
+
+    return ESP_OK;
 }
 
 
