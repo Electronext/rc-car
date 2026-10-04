@@ -37,6 +37,7 @@
 // Measured ADC endpoints from full mechanical travel.
 #define SPEED_POT_ADC_MIN               4
 #define SPEED_POT_ADC_MAX               3385
+#define SPEED_POT_INVERT                1
 
 // AS5048B magnetic joystick sensors.
 #define AS5048B_SDA_GPIO        6
@@ -60,7 +61,7 @@
 #define STEERING_RAW_MAX              7800
 
 // Set to 1 later if the physical steering direction is reversed.
-#define STEERING_INVERT               0
+#define STEERING_INVERT               1
 
 // Throttle calibration (AS5048B at 0x42).
 // Forward decreases the raw angle; reverse increases it.
