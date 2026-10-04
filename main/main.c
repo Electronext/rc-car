@@ -372,12 +372,17 @@ static void skid_steer_mix(float steering,
         throttle_mag * (0.5f * reduction);
 
     /*
-     * Steering right / clockwise is negative. Negating it here makes
-     * right steering produce L > R, i.e. clockwise yaw, regardless
-     * of whether the vehicle is moving forward or reverse.
+     * Steering right / clockwise is negative.
+     *
+     * At zero/forward throttle, right steering gives L > R.
+     * In reverse, invert the differential so the steering control
+     * remains intuitive relative to the vehicle's direction of travel.
      */
+    float steering_direction =
+        throttle < 0.0f ? -1.0f : 1.0f;
+
     float differential =
-        -steering * differential_gain;
+        -steering * steering_direction * differential_gain;
 
     float l = mean + differential;
     float r = mean - differential;
@@ -850,6 +855,15 @@ static void transmitter_init(void)
         );
     }
 
+    /*
+     * Prove the WS2812 and RGB order on a real startup without
+     * wasting energy on the 1-second inactivity/low-battery timer
+     * wake checks.
+     */
+    if (wake_cause != ESP_SLEEP_WAKEUP_TIMER) {
+        status_led_self_test();
+    }
+
     rc_as5048b_init();
 
     if (timer_wake &&
@@ -962,6 +976,14 @@ enum {
     PWM_R_REV = LEDC_CHANNEL_3
 };
 
+typedef struct {
+    int8_t direction;
+    int64_t boost_until_us;
+} motor_state_t;
+
+static motor_state_t left_motor_state = {0};
+static motor_state_t right_motor_state = {0};
+
 
 static void pwm_set(ledc_channel_t channel, uint32_t duty)
 {
@@ -976,13 +998,78 @@ static void motors_stop(void)
     pwm_set(PWM_L_REV, 0);
     pwm_set(PWM_R_FWD, 0);
     pwm_set(PWM_R_REV, 0);
+
+    left_motor_state.direction = 0;
+    left_motor_state.boost_until_us = 0;
+    right_motor_state.direction = 0;
+    right_motor_state.boost_until_us = 0;
+}
+
+
+static uint32_t motor_duty_from_demand(int16_t demand,
+                                       motor_state_t *state)
+{
+    int direction =
+        demand > 0 ? 1 :
+        demand < 0 ? -1 : 0;
+
+    if (direction == 0) {
+        state->direction = 0;
+        state->boost_until_us = 0;
+        return 0;
+    }
+
+    int64_t now = esp_timer_get_time();
+
+    if (state->direction != direction) {
+        state->direction = direction;
+        state->boost_until_us =
+            now + (int64_t)MOTOR_START_BOOST_MS * 1000LL;
+    }
+
+    float command =
+        (float)abs(demand) / 1000.0f;
+
+    if (command > 1.0f) {
+        command = 1.0f;
+    }
+
+    /*
+     * Compress the logical 0..1 demand into the motor's measured
+     * usable running range. Any non-zero logical demand therefore
+     * starts at MOTOR_PWM_RUN_MIN rather than wasting stick travel
+     * inside the electrical/mechanical dead zone.
+     */
+    float duty_fraction =
+        MOTOR_PWM_RUN_MIN +
+        command * (1.0f - MOTOR_PWM_RUN_MIN);
+
+    /*
+     * Static friction is higher than running friction. Give a newly
+     * started or reversed motor a short minimum-start pulse, then
+     * allow it to settle as low as MOTOR_PWM_RUN_MIN.
+     */
+    if (now < state->boost_until_us &&
+        duty_fraction < MOTOR_PWM_START_MIN) {
+
+        duty_fraction = MOTOR_PWM_START_MIN;
+    }
+
+    if (duty_fraction > 1.0f) {
+        duty_fraction = 1.0f;
+    }
+
+    return (uint32_t)lroundf(
+        duty_fraction * (float)MOTOR_PWM_MAX
+    );
 }
 
 
 static void set_one_motor(int16_t demand,
                           ledc_channel_t forward,
                           ledc_channel_t reverse,
-                          bool invert)
+                          bool invert,
+                          motor_state_t *state)
 {
     if (invert) {
         demand = -demand;
@@ -992,32 +1079,23 @@ static void set_one_motor(int16_t demand,
     if (demand < -1000) demand = -1000;
 
     uint32_t duty =
-        ((uint32_t)abs(demand) * MOTOR_PWM_MAX) / 1000;
-
+        motor_duty_from_demand(demand, state);
 
     /*
-     * IMPORTANT:
-     *
-     * Always turn the opposite bridge input OFF before
-     * applying PWM to the desired direction.
+     * Always turn the opposite bridge input OFF before applying PWM
+     * to the desired direction.
      */
     if (demand > 0) {
-
         pwm_set(reverse, 0);
         pwm_set(forward, duty);
-
     } else if (demand < 0) {
-
         pwm_set(forward, 0);
         pwm_set(reverse, duty);
-
     } else {
-
         pwm_set(forward, 0);
         pwm_set(reverse, 0);
     }
 }
-
 
 static void set_motors(int16_t left, int16_t right)
 {
@@ -1025,14 +1103,16 @@ static void set_motors(int16_t left, int16_t right)
         left,
         PWM_L_FWD,
         PWM_L_REV,
-        LEFT_INVERT
+        LEFT_INVERT,
+        &left_motor_state
     );
 
     set_one_motor(
         right,
         PWM_R_FWD,
         PWM_R_REV,
-        RIGHT_INVERT
+        RIGHT_INVERT,
+        &right_motor_state
     );
 }
 
