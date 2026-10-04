@@ -112,9 +112,9 @@ RTC_DATA_ATTR static uint16_t rtc_speed_raw = 0;
 RTC_DATA_ATTR static int8_t rtc_mode_position = 0;
 
 
-static esp_err_t adc_read_channel(adc_channel_t channel,
-                                  int *raw)
+static int adc_read_channel(adc_channel_t channel)
 {
+    int raw = 0;
     esp_err_t err = ESP_FAIL;
 
     for (int attempt = 0;
@@ -124,48 +124,42 @@ static esp_err_t adc_read_channel(adc_channel_t channel,
         err = adc_oneshot_read(
             adc_handle,
             channel,
-            raw
+            &raw
         );
 
         if (err == ESP_OK) {
-            return ESP_OK;
+            return raw;
         }
 
         if (err != ESP_ERR_TIMEOUT) {
-            return err;
+            ESP_ERROR_CHECK(err);
         }
 
         vTaskDelay(1);
     }
 
-    return err;
+    ESP_LOGE(
+        TAG,
+        "ADC channel %d timed out after %d retries",
+        (int)channel,
+        ADC_READ_RETRY_COUNT
+    );
+
+    ESP_ERROR_CHECK(err);
+    return 0;
 }
 
 
-static esp_err_t adc_average_channel(adc_channel_t channel,
-                                     int samples,
-                                     int *average)
+static int adc_average_channel(adc_channel_t channel, int samples)
 {
     int64_t total = 0;
 
     for (int i = 0; i < samples; i++) {
-        int raw = 0;
-
-        esp_err_t err =
-            adc_read_channel(channel, &raw);
-
-        if (err != ESP_OK) {
-            return err;
-        }
-
-        total += raw;
+        total += adc_read_channel(channel);
     }
 
-    *average = (int)(total / samples);
-
-    return ESP_OK;
+    return (int)(total / samples);
 }
-
 
 static void adc_channel_init(int gpio,
                              adc_channel_t *channel,
@@ -249,32 +243,18 @@ static void transmitter_adc_init(void)
 }
 
 
-static esp_err_t read_battery_mv(int *battery_mv_out)
+static int read_battery_mv(void)
 {
-    int raw = 0;
-
-    esp_err_t err =
-        adc_average_channel(
-            battery_channel,
-            32,
-            &raw
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
+    int raw = adc_average_channel(battery_channel, 32);
     int adc_mv = 0;
 
-    err = adc_cali_raw_to_voltage(
-        battery_cali_handle,
-        raw,
-        &adc_mv
+    ESP_ERROR_CHECK(
+        adc_cali_raw_to_voltage(
+            battery_cali_handle,
+            raw,
+            &adc_mv
+        )
     );
-
-    if (err != ESP_OK) {
-        return err;
-    }
 
     int64_t battery_mv =
         (int64_t)adc_mv *
@@ -285,11 +265,8 @@ static esp_err_t read_battery_mv(int *battery_mv_out)
         (battery_mv + BATTERY_DIVIDER_BOTTOM_OHMS / 2) /
         BATTERY_DIVIDER_BOTTOM_OHMS;
 
-    *battery_mv_out = (int)battery_mv;
-
-    return ESP_OK;
+    return (int)battery_mv;
 }
-
 
 static int mode_switch_position_from_raw(int raw)
 {
