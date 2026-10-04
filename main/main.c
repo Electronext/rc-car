@@ -341,6 +341,10 @@ static float speed_scale_from_raw(int raw)
     if (p < 0.0f) p = 0.0f;
     if (p > 1.0f) p = 1.0f;
 
+#if SPEED_POT_INVERT
+    p = 1.0f - p;
+#endif
+
     return SPEED_MIN + p * (1.0f - SPEED_MIN);
 }
 
