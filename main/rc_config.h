@@ -130,13 +130,16 @@
 
 // Throttle-dependent skid steering.
 // At zero throttle, full steering counter-rotates both motors at the
-// speed-pot limit. As |throttle| rises, pivot steering is smoothly
-// blended into travel-relative inner-wheel retardation. At or above
-// TURN_TRAVEL_BLEND_FULL_THROTTLE, only the moving-arc model remains.
-// 0.40 reduction => inner motor runs at 60% of the outer motor at
-// full steering once the travel blend is complete.
+// speed-pot limit. At full throttle, full steering keeps the outer
+// motor at full demand and reduces the inner motor by this fraction.
+// 0.40 => inner motor runs at 60% of outer motor at full throttle.
 #define TURN_INNER_REDUCTION_FULL_THROTTLE  0.40f
-#define TURN_TRAVEL_BLEND_FULL_THROTTLE     0.60f
+
+// Steering convention is latched forward/reverse while the throttle
+// lever crosses its existing neutral deadband. Forward decreases the
+// AS5048B raw angle; reverse increases it.
+#define THROTTLE_STEER_FRAME_FORWARD_RAW    13960
+#define THROTTLE_STEER_FRAME_REVERSE_RAW    13990
 
 // Receiver -> SA8302
 // Fit external pulldowns (recommended 4.7k) from all four SA8302
