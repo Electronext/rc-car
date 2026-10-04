@@ -578,6 +578,34 @@ static float steering_from_raw(uint16_t raw)
 }
 
 
+static float throttle_from_raw(uint16_t raw)
+{
+    float value;
+
+    if (raw < THROTTLE_NEUTRAL_LOW) {
+        value =
+            (float)(THROTTLE_NEUTRAL_LOW - raw) /
+            (float)(THROTTLE_NEUTRAL_LOW - THROTTLE_RAW_FORWARD);
+    } else if (raw > THROTTLE_NEUTRAL_HIGH) {
+        value =
+            -(float)(raw - THROTTLE_NEUTRAL_HIGH) /
+            (float)(THROTTLE_RAW_REVERSE - THROTTLE_NEUTRAL_HIGH);
+    } else {
+        value = 0.0f;
+    }
+
+    if (value > 1.0f) {
+        value = 1.0f;
+    }
+
+    if (value < -1.0f) {
+        value = -1.0f;
+    }
+
+    return value;
+}
+
+
 static void log_sensor(uint8_t address,
                        i2c_master_dev_handle_t sensor,
                        as5048b_stats_t *stats)
@@ -643,12 +671,15 @@ static void log_sensor(uint8_t address,
             field_status(sample.diagnostics)
         );
     } else {
+        float throttle = throttle_from_raw(sample.angle);
+
         ESP_LOGI(
             TAG,
-            "0x%02X THROTTLE angle=%8.3f deg raw=%5u [%5u..%5u] | "
+            "0x%02X THROTTLE=%+.3f angle=%8.3f deg raw=%5u [%5u..%5u] | "
             "AGC=%3u [%3u..%3u] MAG=%5u [%5u..%5u] | "
             "OCF=%u COF=%u CH=%u CL=%u FIELD=%s",
             address,
+            throttle,
             degrees,
             sample.angle,
             stats->angle_min,
@@ -720,6 +751,17 @@ void as5048b_sanity_init(void)
         STEERING_DEADBAND_HIGH,
         STEERING_CENTER_RAW,
         STEERING_RAW_MAX
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Throttle calibration: forward raw %d -> neutral %d..%d "
+        "(centre %d) -> reverse raw %d",
+        THROTTLE_RAW_FORWARD,
+        THROTTLE_NEUTRAL_LOW,
+        THROTTLE_NEUTRAL_HIGH,
+        THROTTLE_CENTER_RAW,
+        THROTTLE_RAW_REVERSE
     );
 
     ESP_LOGI(
