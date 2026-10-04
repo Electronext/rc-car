@@ -15,10 +15,11 @@
 #define JOY_X_GPIO              0
 #define JOY_Y_GPIO              1
 
-// Final transmitter analogue / control allocation.
+// Final transmitter controls / indicators.
 #define BATTERY_GPIO            0
 #define SPEED_GPIO              1
-#define BUTTON_GPIO             4
+#define STATUS_LED_GPIO         3
+#define MODE_SWITCH_GPIO        4
 
 // Battery monitor divider: LiPo+ -> 100k -> ADC -> 100k -> GND.
 #define BATTERY_DIVIDER_TOP_OHMS       100000
@@ -61,8 +62,33 @@
 // ESP-NOW transmitter control is not started while this is 1.
 #define AS5048B_SANITY_TEST     1
 
-// Set to 0 if speed pot isn't fitted yet.
-#define USE_SPEED_POT           0
+// Speed pot is fitted.
+#define USE_SPEED_POT           1
+
+// Three-position ON-OFF-ON selector on GPIO4. The common node is
+// biased midway by equal resistors to 3V3 and GND; the two ON
+// positions pull it to an end rail. Raw thresholds are deliberately
+// broad and can be tightened after the first selector calibration log.
+#define MODE_SWITCH_ADC_LOW_MAX       1000
+#define MODE_SWITCH_ADC_HIGH_MIN      3000
+
+// Status / power policy. Low-battery handling must run before Wi-Fi.
+#define BATTERY_LOW_CUTOFF_MV         3300
+#define BATTERY_LOW_RECOVER_MV        3500
+#define BATTERY_LED_RED_MV            3400
+#define BATTERY_LED_YELLOW_MV         3700
+#define BATTERY_LED_GREEN_MV          4200
+#define LOW_BATTERY_WARNING_MS       10000
+#define LOW_BATTERY_RECHECK_MS       60000
+
+// Link indication: solid battery colour while RX heartbeat is current;
+// blink 300 ms on / 700 ms off while disconnected.
+#define RC_LINK_TIMEOUT_MS             500
+#define STATUS_LED_ON_MS               300
+#define STATUS_LED_OFF_MS              700
+
+// Inactivity is based on user-control movement, not packet traffic.
+#define TX_INACTIVITY_SLEEP_MS      300000
 
 // Joystick deadband as fraction of half travel.
 #define JOYSTICK_DEADBAND       0.05f
