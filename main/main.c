@@ -1105,6 +1105,209 @@ static volatile int64_t last_packet_us = 0;
 static uint32_t rx_packet_count = 0;
 static int64_t rx_last_log_us = 0;
 
+#define RX_RTC_MAGIC 0x52585231UL
+
+enum {
+    RX_SLEEP_NONE = 0,
+    RX_SLEEP_DISCONNECTED = 1,
+    RX_SLEEP_LOW_BATTERY = 2
+};
+
+RTC_DATA_ATTR static uint32_t rx_rtc_magic = 0;
+RTC_DATA_ATTR static uint8_t rx_sleep_reason = RX_SLEEP_NONE;
+
+static bool rx_poll_wake = false;
+static int64_t rx_radio_start_us = 0;
+
+static adc_oneshot_unit_handle_t rx_adc_handle = NULL;
+static adc_cali_handle_t rx_battery_cali_handle = NULL;
+static adc_channel_t rx_battery_channel;
+
+
+static int rx_adc_read_channel(adc_channel_t channel)
+{
+    int raw = 0;
+    esp_err_t err = ESP_FAIL;
+
+    for (int attempt = 0;
+         attempt < ADC_READ_RETRY_COUNT;
+         attempt++) {
+
+        err = adc_oneshot_read(
+            rx_adc_handle,
+            channel,
+            &raw
+        );
+
+        if (err == ESP_OK) {
+            return raw;
+        }
+
+        if (err != ESP_ERR_TIMEOUT) {
+            ESP_ERROR_CHECK(err);
+        }
+
+        vTaskDelay(1);
+    }
+
+    ESP_LOGE(
+        TAG,
+        "RX ADC channel %d timed out after %d retries",
+        (int)channel,
+        ADC_READ_RETRY_COUNT
+    );
+
+    ESP_ERROR_CHECK(err);
+    return 0;
+}
+
+
+static int rx_read_battery_mv(void)
+{
+    int64_t total = 0;
+
+    for (int i = 0; i < 32; i++) {
+        total += rx_adc_read_channel(rx_battery_channel);
+    }
+
+    int raw = (int)(total / 32);
+    int adc_mv = 0;
+
+    ESP_ERROR_CHECK(
+        adc_cali_raw_to_voltage(
+            rx_battery_cali_handle,
+            raw,
+            &adc_mv
+        )
+    );
+
+    int64_t battery_mv =
+        (int64_t)adc_mv *
+        (BATTERY_DIVIDER_TOP_OHMS +
+         BATTERY_DIVIDER_BOTTOM_OHMS);
+
+    battery_mv =
+        (battery_mv + BATTERY_DIVIDER_BOTTOM_OHMS / 2) /
+        BATTERY_DIVIDER_BOTTOM_OHMS;
+
+    return (int)battery_mv;
+}
+
+
+static void receiver_adc_init(void)
+{
+    adc_oneshot_unit_init_cfg_t adc_cfg = {
+        .unit_id = ADC_UNIT_1
+    };
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_new_unit(
+            &adc_cfg,
+            &rx_adc_handle
+        )
+    );
+
+    adc_unit_t unit;
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_io_to_channel(
+            BATTERY_GPIO,
+            &unit,
+            &rx_battery_channel
+        )
+    );
+
+    if (unit != ADC_UNIT_1) {
+        ESP_LOGE(
+            TAG,
+            "RX battery GPIO%d is not on ADC1",
+            BATTERY_GPIO
+        );
+        abort();
+    }
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT
+    };
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            rx_adc_handle,
+            rx_battery_channel,
+            &chan_cfg
+        )
+    );
+
+    adc_cali_curve_fitting_config_t cali_cfg = {
+        .unit_id = ADC_UNIT_1,
+        .chan = rx_battery_channel,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT
+    };
+
+    ESP_ERROR_CHECK(
+        adc_cali_create_scheme_curve_fitting(
+            &cali_cfg,
+            &rx_battery_cali_handle
+        )
+    );
+}
+
+
+static void rx_enter_sleep(uint8_t reason,
+                           uint32_t sleep_ms)
+{
+    status_led_off();
+
+    rx_rtc_magic = RX_RTC_MAGIC;
+    rx_sleep_reason = reason;
+
+    ESP_ERROR_CHECK(
+        esp_sleep_enable_timer_wakeup(
+            (uint64_t)sleep_ms * 1000ULL
+        )
+    );
+
+    ESP_ERROR_CHECK(
+        esp_deep_sleep_enable_gpio_wakeup(
+            1ULL << CHARGE_STATUS_GPIO,
+            ESP_GPIO_WAKEUP_GPIO_LOW
+        )
+    );
+
+    esp_deep_sleep_start();
+}
+
+
+static void rx_low_battery_warning_and_sleep(int battery_mv,
+                                             bool show_warning)
+{
+    ESP_LOGW(
+        TAG,
+        "RX battery low: %d mV; wireless will not start",
+        battery_mv
+    );
+
+    if (show_warning) {
+        int64_t end_us =
+            esp_timer_get_time() +
+            (int64_t)LOW_BATTERY_WARNING_MS * 1000LL;
+
+        while (esp_timer_get_time() < end_us) {
+            status_led_set_rgb(255, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_ON_MS));
+            status_led_off();
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_OFF_MS));
+        }
+    }
+
+    rx_enter_sleep(
+        RX_SLEEP_LOW_BATTERY,
+        LOW_BATTERY_RECHECK_MS
+    );
+}
+
 /*
  * Four LEDC channels correspond directly to the four SA8302
  * inputs.
