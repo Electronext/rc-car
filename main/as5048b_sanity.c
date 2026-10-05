@@ -17,6 +17,8 @@
 #include "rc_config.h"
 #include "as5048b_sanity.h"
 
+#if RC_TRANSMITTER
+
 #define AS5048B_REG_AGC             0xFA
 #define AS5048B_READOUT_BYTES       6
 
@@ -814,3 +816,5 @@ void as5048b_sanity_init(void)
         NULL
     );
 }
+
+#endif  // RC_TRANSMITTER
