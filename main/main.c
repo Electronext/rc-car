@@ -1117,6 +1117,7 @@ RTC_DATA_ATTR static uint32_t rx_rtc_magic = 0;
 RTC_DATA_ATTR static uint8_t rx_sleep_reason = RX_SLEEP_NONE;
 
 static bool rx_poll_wake = false;
+static volatile bool rx_shutdown_pending = false;
 static int64_t rx_radio_start_us = 0;
 
 static adc_oneshot_unit_handle_t rx_adc_handle = NULL;
@@ -1522,6 +1523,11 @@ static void motor_task(void *arg)
                 &packet,
                 pdMS_TO_TICKS(10))) {
 
+            if (rx_shutdown_pending) {
+                motors_stop();
+                continue;
+            }
+
             set_motors(packet.left, packet.right);
 
             rc_ack_t ack = {
@@ -1569,6 +1575,96 @@ static void motor_task(void *arg)
 
             //ESP_LOGW(TAG, "FAILSAFE - motors stopped");
         }
+    }
+}
+
+
+static void rx_status_task(void *arg)
+{
+    (void)arg;
+
+    int battery_mv = rx_read_battery_mv();
+    int64_t now = esp_timer_get_time();
+    int64_t last_battery_read_us = now;
+    int64_t disconnected_since_us = now;
+
+    while (1) {
+        now = esp_timer_get_time();
+
+        if ((now - last_battery_read_us) >= 1000000LL) {
+            battery_mv = rx_read_battery_mv();
+            last_battery_read_us = now;
+        }
+
+        bool charging = is_charging();
+
+        bool linked =
+            last_packet_us != 0 &&
+            (now - last_packet_us) <=
+                ((int64_t)RC_LINK_TIMEOUT_MS * 1000LL);
+
+        if (linked) {
+            rx_poll_wake = false;
+            disconnected_since_us = 0;
+        } else if (charging) {
+            disconnected_since_us = 0;
+        } else if (disconnected_since_us == 0) {
+            disconnected_since_us = now;
+        }
+
+        if (!charging &&
+            battery_mv < BATTERY_LOW_CUTOFF_MV) {
+
+            rx_shutdown_pending = true;
+            motors_stop();
+
+            rx_low_battery_warning_and_sleep(
+                battery_mv,
+                true
+            );
+        }
+
+        render_status_led(
+            charging,
+            linked,
+            battery_mv,
+            now
+        );
+
+        if (!charging && !linked) {
+            bool poll_window_expired =
+                rx_poll_wake &&
+                (now - rx_radio_start_us) >=
+                    ((int64_t)RX_POLL_LISTEN_MS * 1000LL);
+
+            bool disconnected_timeout =
+                !rx_poll_wake &&
+                disconnected_since_us != 0 &&
+                (now - disconnected_since_us) >=
+                    ((int64_t)DISCONNECTED_SLEEP_MS * 1000LL);
+
+            if (poll_window_expired ||
+                disconnected_timeout) {
+
+                ESP_LOGI(
+                    TAG,
+                    "%s; RX entering deep sleep",
+                    poll_window_expired
+                        ? "TX not found during poll"
+                        : "RX disconnected timeout"
+                );
+
+                rx_shutdown_pending = true;
+                motors_stop();
+
+                rx_enter_sleep(
+                    RX_SLEEP_DISCONNECTED,
+                    RX_SLEEP_POLL_MS
+                );
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
