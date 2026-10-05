@@ -209,7 +209,8 @@ static void render_status_led(bool charging,
 enum {
     TX_SLEEP_NONE = 0,
     TX_SLEEP_INACTIVITY = 1,
-    TX_SLEEP_LOW_BATTERY = 2
+    TX_SLEEP_LOW_BATTERY = 2,
+    TX_SLEEP_DISCONNECTED = 3
 };
 
 static const uint8_t tx_mac[ESP_NOW_ETH_ALEN] = RC_TX_MAC_INIT;
@@ -545,6 +546,13 @@ static void enter_timed_sleep(uint8_t reason,
         )
     );
 
+    ESP_ERROR_CHECK(
+        esp_deep_sleep_enable_gpio_wakeup(
+            1ULL << CHARGE_STATUS_GPIO,
+            ESP_GPIO_WAKEUP_GPIO_LOW
+        )
+    );
+
     esp_deep_sleep_start();
 }
 
@@ -658,35 +666,28 @@ static void status_task(void *arg)
             last_battery_read_us = now;
         }
 
-        uint8_t red, green, blue;
-
-        battery_colour(
-            battery_mv,
-            &red,
-            &green,
-            &blue
-        );
+        bool charging = is_charging();
 
         bool linked =
             last_ack_us != 0 &&
             (now - last_ack_us) <=
                 ((int64_t)RC_LINK_TIMEOUT_MS * 1000LL);
 
-        if (linked) {
-            status_led_set_rgb(red, green, blue);
-        } else {
-            uint32_t cycle_ms =
-                STATUS_LED_ON_MS + STATUS_LED_OFF_MS;
+        if (!charging &&
+            battery_mv < BATTERY_LOW_CUTOFF_MV) {
 
-            uint32_t phase_ms =
-                (uint32_t)((now / 1000LL) % cycle_ms);
-
-            if (phase_ms < STATUS_LED_ON_MS) {
-                status_led_set_rgb(red, green, blue);
-            } else {
-                status_led_off();
-            }
+            low_battery_warning_and_sleep(
+                battery_mv,
+                true
+            );
         }
+
+        render_status_led(
+            charging,
+            linked,
+            battery_mv,
+            now
+        );
 
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -703,6 +704,7 @@ static void transmitter_task(void *arg)
     };
 
     int64_t last_activity_us = esp_timer_get_time();
+    int64_t disconnected_since_us = 0;
     int steering_frame = 1;
     int activity_speed_raw = adc_read_channel(speed_channel);
     int activity_mode_position =
@@ -817,10 +819,40 @@ static void transmitter_task(void *arg)
             }
         }
 
-        if ((now - last_activity_us) >=
-            ((int64_t)TX_INACTIVITY_SLEEP_MS * 1000LL)) {
+        bool charging = is_charging();
 
-            ESP_LOGI(TAG, "Transmitter inactive; entering deep sleep");
+        bool linked =
+            last_ack_us != 0 &&
+            (now - last_ack_us) <=
+                ((int64_t)RC_LINK_TIMEOUT_MS * 1000LL);
+
+        if (charging || linked) {
+            disconnected_since_us = 0;
+        } else if (disconnected_since_us == 0) {
+            disconnected_since_us = now;
+        }
+
+        bool disconnected_timeout =
+            !charging &&
+            !linked &&
+            disconnected_since_us != 0 &&
+            (now - disconnected_since_us) >=
+                ((int64_t)DISCONNECTED_SLEEP_MS * 1000LL);
+
+        bool inactivity_timeout =
+            !charging &&
+            (now - last_activity_us) >=
+                ((int64_t)TX_INACTIVITY_SLEEP_MS * 1000LL);
+
+        if (disconnected_timeout || inactivity_timeout) {
+
+            ESP_LOGI(
+                TAG,
+                "%s; entering deep sleep",
+                disconnected_timeout
+                    ? "TX disconnected timeout"
+                    : "Transmitter inactive"
+            );
 
             packet.sequence++;
             packet.left = 0;
@@ -836,7 +868,9 @@ static void transmitter_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(30));
 
             enter_timed_sleep(
-                TX_SLEEP_INACTIVITY,
+                disconnected_timeout
+                    ? TX_SLEEP_DISCONNECTED
+                    : TX_SLEEP_INACTIVITY,
                 TX_SLEEP_POLL_MS,
                 steering_sample.angle,
                 throttle_sample.angle,
@@ -849,11 +883,6 @@ static void transmitter_task(void *arg)
 
         if (++log_div >= 20) {
             log_div = 0;
-
-            bool linked =
-                last_ack_us != 0 &&
-                (now - last_ack_us) <=
-                    ((int64_t)RC_LINK_TIMEOUT_MS * 1000LL);
 
             ESP_LOGI(
                 TAG,
@@ -929,9 +958,11 @@ static void transmitter_init(void)
 #endif
 
     transmitter_adc_init();
+    charge_status_init();
     status_led_init();
 
     int battery_mv = read_battery_mv();
+    bool charging = is_charging();
 
     esp_sleep_wakeup_cause_t wake_cause =
         esp_sleep_get_wakeup_cause();
@@ -943,7 +974,9 @@ static void transmitter_init(void)
     if (timer_wake &&
         rtc_sleep_reason == TX_SLEEP_LOW_BATTERY) {
 
-        if (battery_mv < BATTERY_LOW_RECOVER_MV) {
+        if (!charging &&
+            battery_mv < BATTERY_LOW_RECOVER_MV) {
+
             low_battery_warning_and_sleep(
                 battery_mv,
                 false
@@ -951,7 +984,9 @@ static void transmitter_init(void)
         }
 
         rtc_sleep_reason = TX_SLEEP_NONE;
-    } else if (battery_mv < BATTERY_LOW_CUTOFF_MV) {
+    } else if (!charging &&
+               battery_mv < BATTERY_LOW_CUTOFF_MV) {
+
         low_battery_warning_and_sleep(
             battery_mv,
             true
@@ -963,14 +998,16 @@ static void transmitter_init(void)
      * wasting energy on the 1-second inactivity/low-battery timer
      * wake checks.
      */
-    if (wake_cause != ESP_SLEEP_WAKEUP_TIMER) {
+    if (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
         status_led_self_test();
     }
 
     rc_as5048b_init();
 
     if (timer_wake &&
-        rtc_sleep_reason == TX_SLEEP_INACTIVITY) {
+        (rtc_sleep_reason == TX_SLEEP_INACTIVITY ||
+         rtc_sleep_reason == TX_SLEEP_DISCONNECTED) &&
+        !charging) {
 
         rc_as5048b_sample_t steering_sample = {0};
         rc_as5048b_sample_t throttle_sample = {0};
