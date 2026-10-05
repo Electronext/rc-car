@@ -145,8 +145,7 @@ static uint8_t charging_breathe_blue(int64_t now_us)
         (float)phase_ms / (float)CHARGE_BREATHE_PERIOD_MS;
 
     float envelope =
-        0.12f +
-        0.88f * (0.5f - 0.5f * cosf(two_pi * phase));
+        0.5f - 0.5f * cosf(two_pi * phase);
 
     return (uint8_t)lroundf(255.0f * envelope);
 }
