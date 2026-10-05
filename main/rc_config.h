@@ -119,6 +119,7 @@
 #define CHARGE_BREATHE_PERIOD_MS       2000
 #define DISCONNECTED_SLEEP_MS        120000
 #define RX_SLEEP_POLL_MS               5000
+#define RX_POLL_LISTEN_MS                750
 
 // Inactivity is based on user-control state, not packet traffic.
 // While asleep, wake briefly at this interval and sample controls
