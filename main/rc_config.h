@@ -118,6 +118,7 @@
 #define STATUS_LED_SELF_TEST_MS         150
 #define CHARGE_BREATHE_PERIOD_MS       2000
 #define DISCONNECTED_SLEEP_MS        120000
+#define RX_SLEEP_POLL_MS               5000
 
 // Inactivity is based on user-control state, not packet traffic.
 // While asleep, wake briefly at this interval and sample controls
@@ -158,7 +159,7 @@
 // logic inputs to GND so they stay deterministically LOW throughout
 // ROM/bootloader startup before application firmware takes control.
 #define MOTOR_L_FWD_GPIO        3   // INA
-#define MOTOR_L_REV_GPIO        7   // INB
+#define MOTOR_L_REV_GPIO        5   // INB
 #define MOTOR_R_FWD_GPIO        0   // INC
 #define MOTOR_R_REV_GPIO        1   // IND
 
