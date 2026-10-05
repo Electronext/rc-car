@@ -1692,6 +1692,53 @@ static void receiver_init(void)
 {
     ESP_LOGI(TAG, "Starting RECEIVER");
 
+    receiver_adc_init();
+    charge_status_init();
+    status_led_init();
+
+    int battery_mv = rx_read_battery_mv();
+    bool charging = is_charging();
+
+    esp_sleep_wakeup_cause_t wake_cause =
+        esp_sleep_get_wakeup_cause();
+
+    bool timer_wake =
+        wake_cause == ESP_SLEEP_WAKEUP_TIMER &&
+        rx_rtc_magic == RX_RTC_MAGIC;
+
+    if (timer_wake &&
+        rx_sleep_reason == RX_SLEEP_LOW_BATTERY) {
+
+        if (!charging &&
+            battery_mv < BATTERY_LOW_RECOVER_MV) {
+
+            rx_low_battery_warning_and_sleep(
+                battery_mv,
+                false
+            );
+        }
+    } else if (!charging &&
+               battery_mv < BATTERY_LOW_CUTOFF_MV) {
+
+        rx_low_battery_warning_and_sleep(
+            battery_mv,
+            true
+        );
+    }
+
+    if (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+        status_led_self_test();
+    }
+
+    rx_poll_wake =
+        timer_wake &&
+        rx_sleep_reason == RX_SLEEP_DISCONNECTED &&
+        !charging;
+
+    rx_rtc_magic = 0;
+    rx_sleep_reason = RX_SLEEP_NONE;
+    rx_shutdown_pending = false;
+
     ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .timer_num = LEDC_TIMER_0,
@@ -1785,6 +1832,15 @@ static void receiver_init(void)
         tx_mac[3], tx_mac[4], tx_mac[5]
     );
 
+    rx_radio_start_us = esp_timer_get_time();
+
+    if (rx_poll_wake) {
+        ESP_LOGI(
+            TAG,
+            "RX poll wake: listening for TX for %d ms",
+            RX_POLL_LISTEN_MS
+        );
+    }
 
     xTaskCreate(
         motor_task,
@@ -1792,6 +1848,15 @@ static void receiver_init(void)
         4096,
         NULL,
         6,
+        NULL
+    );
+
+    xTaskCreate(
+        rx_status_task,
+        "rx_status",
+        3072,
+        NULL,
+        4,
         NULL
     );
 }
