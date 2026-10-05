@@ -19,11 +19,21 @@
 #define JOY_X_GPIO              0
 #define JOY_Y_GPIO              1
 
-// Final transmitter controls / indicators.
+// Role-specific controls / indicators.
+#if RC_TRANSMITTER
 #define BATTERY_GPIO            0
 #define SPEED_GPIO              1
 #define STATUS_LED_GPIO         3
 #define MODE_SWITCH_GPIO        4
+#define CHARGE_STATUS_GPIO      5
+#else
+#define BATTERY_GPIO            2
+#define CHARGE_STATUS_GPIO      4
+#define STATUS_LED_GPIO         8
+#endif
+
+// Charger status is active LOW (!CHG).
+#define CHARGE_STATUS_ACTIVE_LEVEL      0
 
 // Battery monitor divider: LiPo+ -> 100k -> ADC -> 100k -> GND.
 #define BATTERY_DIVIDER_TOP_OHMS       100000
@@ -106,6 +116,8 @@
 #define STATUS_LED_OFF_MS              700
 #define STATUS_LED_BRIGHTNESS           48
 #define STATUS_LED_SELF_TEST_MS         150
+#define CHARGE_BREATHE_PERIOD_MS       2000
+#define DISCONNECTED_SLEEP_MS        120000
 
 // Inactivity is based on user-control state, not packet traffic.
 // While asleep, wake briefly at this interval and sample controls
@@ -146,7 +158,7 @@
 // logic inputs to GND so they stay deterministically LOW throughout
 // ROM/bootloader startup before application firmware takes control.
 #define MOTOR_L_FWD_GPIO        3   // INA
-#define MOTOR_L_REV_GPIO        4   // INB
+#define MOTOR_L_REV_GPIO        7   // INB
 #define MOTOR_R_FWD_GPIO        0   // INC
 #define MOTOR_R_REV_GPIO        1   // IND
 
