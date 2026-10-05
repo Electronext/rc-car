@@ -77,6 +77,127 @@ static void wifi_init(void)
 }
 
 
+static void charge_status_init(void)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << CHARGE_STATUS_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&cfg));
+}
+
+
+static bool is_charging(void)
+{
+    return gpio_get_level(CHARGE_STATUS_GPIO) ==
+           CHARGE_STATUS_ACTIVE_LEVEL;
+}
+
+
+static void battery_colour(int battery_mv,
+                           uint8_t *red,
+                           uint8_t *green,
+                           uint8_t *blue)
+{
+    *blue = 0;
+
+    if (battery_mv <= BATTERY_LED_RED_MV) {
+        *red = 255;
+        *green = 0;
+        return;
+    }
+
+    if (battery_mv < BATTERY_LED_YELLOW_MV) {
+        int span = BATTERY_LED_YELLOW_MV - BATTERY_LED_RED_MV;
+        int pos = battery_mv - BATTERY_LED_RED_MV;
+
+        *red = 255;
+        *green = (uint8_t)((255 * pos) / span);
+        return;
+    }
+
+    if (battery_mv < BATTERY_LED_GREEN_MV) {
+        int span = BATTERY_LED_GREEN_MV - BATTERY_LED_YELLOW_MV;
+        int pos = battery_mv - BATTERY_LED_YELLOW_MV;
+
+        *red = (uint8_t)(255 - (255 * pos) / span);
+        *green = 255;
+        return;
+    }
+
+    *red = 0;
+    *green = 255;
+}
+
+
+static uint8_t charging_breathe_blue(int64_t now_us)
+{
+    const float two_pi = 6.28318530718f;
+
+    uint32_t phase_ms =
+        (uint32_t)((now_us / 1000LL) % CHARGE_BREATHE_PERIOD_MS);
+
+    float phase =
+        (float)phase_ms / (float)CHARGE_BREATHE_PERIOD_MS;
+
+    float envelope =
+        0.12f +
+        0.88f * (0.5f - 0.5f * cosf(two_pi * phase));
+
+    return (uint8_t)lroundf(255.0f * envelope);
+}
+
+
+static void render_status_led(bool charging,
+                              bool linked,
+                              int battery_mv,
+                              int64_t now_us)
+{
+    if (charging) {
+        if (linked) {
+            status_led_set_rgb(0, 0, 255);
+        } else {
+            status_led_set_rgb(
+                0,
+                0,
+                charging_breathe_blue(now_us)
+            );
+        }
+        return;
+    }
+
+    uint8_t red, green, blue;
+
+    battery_colour(
+        battery_mv,
+        &red,
+        &green,
+        &blue
+    );
+
+    if (linked) {
+        status_led_set_rgb(red, green, blue);
+        return;
+    }
+
+    uint32_t cycle_ms =
+        STATUS_LED_ON_MS + STATUS_LED_OFF_MS;
+
+    uint32_t phase_ms =
+        (uint32_t)((now_us / 1000LL) % cycle_ms);
+
+    if (phase_ms < STATUS_LED_ON_MS) {
+        status_led_set_rgb(red, green, blue);
+    } else {
+        status_led_off();
+    }
+}
+
+
 /* ============================================================
  * TRANSMITTER
  * ============================================================ */
@@ -401,42 +522,6 @@ static void skid_steer_mix(float steering,
     *left = l;
     *right = r;
 }
-
-static void battery_colour(int battery_mv,
-                           uint8_t *red,
-                           uint8_t *green,
-                           uint8_t *blue)
-{
-    *blue = 0;
-
-    if (battery_mv <= BATTERY_LED_RED_MV) {
-        *red = 255;
-        *green = 0;
-        return;
-    }
-
-    if (battery_mv < BATTERY_LED_YELLOW_MV) {
-        int span = BATTERY_LED_YELLOW_MV - BATTERY_LED_RED_MV;
-        int pos = battery_mv - BATTERY_LED_RED_MV;
-
-        *red = 255;
-        *green = (uint8_t)((255 * pos) / span);
-        return;
-    }
-
-    if (battery_mv < BATTERY_LED_GREEN_MV) {
-        int span = BATTERY_LED_GREEN_MV - BATTERY_LED_YELLOW_MV;
-        int pos = battery_mv - BATTERY_LED_YELLOW_MV;
-
-        *red = (uint8_t)(255 - (255 * pos) / span);
-        *green = 255;
-        return;
-    }
-
-    *red = 0;
-    *green = 255;
-}
-
 
 static void enter_timed_sleep(uint8_t reason,
                               uint32_t sleep_ms,
