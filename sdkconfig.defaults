@@ -1,0 +1,6 @@
+# Use the ESP32-C3 native USB Serial/JTAG controller as the primary
+# bidirectional console. This allows IDF Monitor/serial terminals on
+# the board's native USB connection to send RXDIAG commands as well as
+# receive logs, and leaves GPIO20/GPIO21 free for application use.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
