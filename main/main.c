@@ -30,6 +30,7 @@
 #include "as5048b_sanity.h"
 #include "as5048b_controls.h"
 #include "status_led.h"
+#include "reset_diag.h"
 
 static const char *TAG = "RC";
 
