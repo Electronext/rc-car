@@ -121,6 +121,13 @@
 #define RX_SLEEP_POLL_MS               5000
 #define RX_POLL_LISTEN_MS                750
 
+// RX reset diagnostics. NVS is written only for cold/unexpected boots;
+// runtime minima are retained in RTC RAM without flash wear.
+#define RX_RESET_LOG_CAPACITY              32
+#define RX_RESET_RECENT_WINDOW_MS        1000
+#define RX_DIAG_BATTERY_SAMPLE_MS          50
+#define RX_DIAG_BATTERY_SAMPLE_COUNT        8
+
 // Inactivity is based on user-control state, not packet traffic.
 // While asleep, wake briefly at this interval and sample controls
 // without starting Wi-Fi; stay asleep if nothing moved.
