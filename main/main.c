@@ -967,12 +967,6 @@ static void transmitter_init(void)
     esp_sleep_wakeup_cause_t wake_cause =
         esp_sleep_get_wakeup_cause();
 
-    reset_diag_record_boot(
-        battery_mv,
-        charging,
-        rx_sleep_reason
-    );
-
     bool timer_wake =
         wake_cause == ESP_SLEEP_WAKEUP_TIMER &&
         rtc_magic == TX_RTC_MAGIC;
@@ -1735,6 +1729,12 @@ static void receiver_init(void)
 
     esp_sleep_wakeup_cause_t wake_cause =
         esp_sleep_get_wakeup_cause();
+
+    reset_diag_record_boot(
+        battery_mv,
+        charging,
+        rx_sleep_reason
+    );
 
     bool timer_wake =
         wake_cause == ESP_SLEEP_WAKEUP_TIMER &&
