@@ -148,25 +148,25 @@ static esp_err_t ring_save(nvs_handle_t nvs,
 static void print_record(const reset_diag_record_t *r)
 {
     printf(
-        "#%lu reset=%s(%lu) wake=%s(%lu) bootVBAT=%u"
+        "#%lu reset=%s(%lu) wake=%s(%lu) bootVBAT=%.3f V"
         " charge=%u sleep=%u",
         (unsigned long)r->sequence,
         reset_reason_name((esp_reset_reason_t)r->reset_reason),
         (unsigned long)r->reset_reason,
         wake_cause_name((esp_sleep_wakeup_cause_t)r->wake_cause),
         (unsigned long)r->wake_cause,
-        (unsigned)r->boot_battery_mv,
+        (double)r->boot_battery_mv / 1000.0,
         (unsigned)r->charging,
         (unsigned)r->prior_sleep_reason
     );
 
     if (r->snapshot_valid) {
         printf(
-            " | prev uptime=%lu ms minVBAT_boot=%u"
-            " minVBAT_recent=%u linked=%u charge=%u packets=%lu",
+            " | prev uptime=%lu ms minVBAT_boot=%.3f V"
+            " minVBAT_recent=%.3f V linked=%u charge=%u packets=%lu",
             (unsigned long)r->prev_uptime_ms,
-            (unsigned)r->prev_min_battery_boot_mv,
-            (unsigned)r->prev_min_battery_recent_mv,
+            (double)r->prev_min_battery_boot_mv / 1000.0,
+            (double)r->prev_min_battery_recent_mv / 1000.0,
             (unsigned)r->prev_linked,
             (unsigned)r->prev_charging,
             (unsigned long)r->prev_packet_count
