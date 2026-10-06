@@ -385,20 +385,25 @@ static void console_task(void *arg)
 {
     (void)arg;
 
-    char line[24];
-
     printf(
         "RXDIAG serial commands: d=dump, c=clear, x=dump+clear, ?=help\n"
     );
 
     while (1) {
-        if (fgets(line, sizeof(line), stdin) == NULL) {
+        int ch = getchar();
+
+        if (ch == EOF) {
             clearerr(stdin);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
 
-        switch (line[0]) {
+        /*
+         * Process commands one byte at a time so ESP-IDF monitor's
+         * "send message" action does not need to append Enter/newline.
+         * Ignore CR/LF in case a terminal does send them.
+         */
+        switch (ch) {
         case 'd':
         case 'D':
             dump_ring();
@@ -423,8 +428,15 @@ static void console_task(void *arg)
             );
             break;
 
+        case '\r':
+        case '\n':
+            break;
+
         default:
-            printf("RXDIAG: unknown command; enter ? for help\n");
+            printf(
+                "RXDIAG: unknown command '%c'; enter ? for help\n",
+                (char)ch
+            );
             break;
         }
     }
