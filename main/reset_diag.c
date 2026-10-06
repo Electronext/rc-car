@@ -246,6 +246,28 @@ void reset_diag_record_boot(int boot_battery_mv,
                             bool charging,
                             uint8_t prior_sleep_reason)
 {
+    /*
+     * Normal timer/GPIO wakeups from an intentional deep sleep are
+     * expected operation, especially the RX 5-second poll cycle.
+     * Do not burn NVS endurance recording those.
+     */
+    if (esp_reset_reason() == ESP_RST_DEEPSLEEP &&
+        prior_sleep_reason != 0) {
+
+        uint16_t initial_mv =
+            (uint16_t)(boot_battery_mv < 0 ? 0 : boot_battery_mv);
+
+        rtc_snapshot.magic = DIAG_RTC_MAGIC;
+        rtc_snapshot.uptime_ms = 0;
+        rtc_snapshot.packet_count = 0;
+        rtc_snapshot.recent_window_start_ms = 0;
+        rtc_snapshot.min_battery_boot_mv = initial_mv;
+        rtc_snapshot.min_battery_recent_mv = initial_mv;
+        rtc_snapshot.linked = 0;
+        rtc_snapshot.charging = charging ? 1 : 0;
+        return;
+    }
+
     nvs_handle_t nvs;
     esp_err_t err = nvs_open("rxdiag", NVS_READWRITE, &nvs);
 
