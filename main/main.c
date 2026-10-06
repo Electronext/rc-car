@@ -967,6 +967,12 @@ static void transmitter_init(void)
     esp_sleep_wakeup_cause_t wake_cause =
         esp_sleep_get_wakeup_cause();
 
+    reset_diag_record_boot(
+        battery_mv,
+        charging,
+        rx_sleep_reason
+    );
+
     bool timer_wake =
         wake_cause == ESP_SLEEP_WAKEUP_TIMER &&
         rtc_magic == TX_RTC_MAGIC;
@@ -1163,15 +1169,19 @@ static int rx_adc_read_channel(adc_channel_t channel)
 }
 
 
-static int rx_read_battery_mv(void)
+static int rx_read_battery_mv_samples(int samples)
 {
+    if (samples < 1) {
+        samples = 1;
+    }
+
     int64_t total = 0;
 
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < samples; i++) {
         total += rx_adc_read_channel(rx_battery_channel);
     }
 
-    int raw = (int)(total / 32);
+    int raw = (int)(total / samples);
     int adc_mv = 0;
 
     ESP_ERROR_CHECK(
@@ -1192,6 +1202,12 @@ static int rx_read_battery_mv(void)
         BATTERY_DIVIDER_BOTTOM_OHMS;
 
     return (int)battery_mv;
+}
+
+
+static int rx_read_battery_mv(void)
+{
+    return rx_read_battery_mv_samples(32);
 }
 
 
@@ -1591,9 +1607,18 @@ static void rx_status_task(void *arg)
     while (1) {
         now = esp_timer_get_time();
 
-        if ((now - last_battery_read_us) >= 1000000LL) {
-            battery_mv = rx_read_battery_mv();
+        bool battery_sampled = false;
+
+        if ((now - last_battery_read_us) >=
+            ((int64_t)RX_DIAG_BATTERY_SAMPLE_MS * 1000LL)) {
+
+            battery_mv =
+                rx_read_battery_mv_samples(
+                    RX_DIAG_BATTERY_SAMPLE_COUNT
+                );
+
             last_battery_read_us = now;
+            battery_sampled = true;
         }
 
         bool charging = is_charging();
@@ -1602,6 +1627,15 @@ static void rx_status_task(void *arg)
             last_packet_us != 0 &&
             (now - last_packet_us) <=
                 ((int64_t)RC_LINK_TIMEOUT_MS * 1000LL);
+
+        if (battery_sampled) {
+            reset_diag_runtime_sample(
+                battery_mv,
+                linked,
+                charging,
+                rx_packet_count
+            );
+        }
 
         if (linked) {
             rx_poll_wake = false;
@@ -1738,6 +1772,8 @@ static void receiver_init(void)
     rx_rtc_magic = 0;
     rx_sleep_reason = RX_SLEEP_NONE;
     rx_shutdown_pending = false;
+
+    reset_diag_start_console_task();
 
     ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
