@@ -1083,135 +1083,170 @@ static void transmitter_task(void *arg)
         float steering = 0.0f;
         float pivot_steering = 0.0f;
         float curvature = 0.0f;
+        float throttle_raw_value = 0.0f;
         float throttle = 0.0f;
         float left = 0.0f;
         float right = 0.0f;
-        float pivot_exponent =
-            pivot_exponent_from_raw(throttle_expo_raw);
-        float expo = expo_from_mode(mode_position);
-        float speed = CALIBRATION_SPEED_LIMIT;
+
+        float throttle_expo =
+            throttle_expo_from_raw(throttle_expo_raw);
+
+        float speed =
+            speed_limit_from_mode(mode_position);
+
+        bool stupid_mode =
+            mode_position > 0;
 
         if (controls_valid) {
             steering_raw_value =
                 steering_from_raw(steering_sample.angle);
 
-            steering = apply_expo(
-                steering_raw_value,
-                expo
-            );
+            /*
+             * Normal steering has no variable expo. Drive curvature is
+             * shaped only by the fixed g=2.2 mixer. Pivot has its own
+             * fixed power-law expo.
+             */
+            steering = steering_raw_value;
 
             pivot_steering = apply_power_expo(
                 steering_raw_value,
-                pivot_exponent
+                PIVOT_EXPO_EXPONENT
             );
+
+            throttle_raw_value =
+                throttle_from_raw(throttle_sample.angle);
 
             throttle = apply_expo(
-                throttle_from_raw(throttle_sample.angle),
-                expo
+                throttle_raw_value,
+                throttle_expo
             );
 
-            bool steering_neutral = steering_raw_value == 0.0f;
-            bool throttle_neutral = throttle == 0.0f;
-            int64_t mix_now = esp_timer_get_time();
+            if (stupid_mode) {
+                /*
+                 * Deliberately crude bang-bang mode:
+                 * - steering is dead until +/-45 degrees, then 70..100%
+                 * - throttle is dead until half travel, then 70..100%
+                 * - simultaneous inputs are simply added/subtracted and
+                 *   clamped, approximating a basic differential mixer.
+                 *
+                 * RX interprets these L/R values as direct PWM fractions.
+                 */
+                float stupid_steer =
+                    stupid_steering_command(steering_sample.angle);
 
-            /*
-             * Pivot is armed only from a fully centred IDLE state.
-             * DRIVE remains latched through throttle zero/reversal while
-             * steering is held, so crossing zero cannot unexpectedly
-             * become differential steering.
-             */
-            if (steering_mode == STEERING_MODE_IDLE) {
-                if (!throttle_neutral) {
-                    steering_mode = STEERING_MODE_DRIVE;
-                } else if (!steering_neutral) {
-                    steering_mode = STEERING_MODE_PIVOT;
+                float stupid_throttle =
+                    stupid_throttle_command(throttle_raw_value);
+
+                left =
+                    clamp_unit(stupid_throttle + stupid_steer);
+
+                right =
+                    clamp_unit(stupid_throttle - stupid_steer);
+
+                speed = DRIVE_SPEED_FULL;
+                steering_mode = STEERING_MODE_DRIVE;
+                pivot_to_drive_blending = false;
+                curvature = 0.0f;
+            } else {
+                bool steering_neutral =
+                    steering_raw_value == 0.0f;
+
+                bool throttle_neutral =
+                    throttle == 0.0f;
+
+                int64_t mix_now =
+                    esp_timer_get_time();
+
+                /*
+                 * Pivot is armed only from a fully centred IDLE state.
+                 * DRIVE remains latched through throttle zero/reversal
+                 * while steering is held.
+                 */
+                if (steering_mode == STEERING_MODE_IDLE) {
+                    if (!throttle_neutral) {
+                        steering_mode = STEERING_MODE_DRIVE;
+                    } else if (!steering_neutral) {
+                        steering_mode = STEERING_MODE_PIVOT;
+                    }
+                } else if (steering_mode == STEERING_MODE_PIVOT) {
+                    if (!throttle_neutral) {
+                        pivot_mix(
+                            pivot_steering,
+                            speed,
+                            &pivot_blend_start_left,
+                            &pivot_blend_start_right
+                        );
+
+                        steering_mode = STEERING_MODE_DRIVE;
+                        pivot_to_drive_blending = true;
+                        pivot_to_drive_start_us = mix_now;
+                    } else if (steering_neutral) {
+                        steering_mode = STEERING_MODE_IDLE;
+                    }
+                } else if (throttle_neutral && steering_neutral) {
+                    steering_mode = STEERING_MODE_IDLE;
+                    pivot_to_drive_blending = false;
                 }
-            } else if (steering_mode == STEERING_MODE_PIVOT) {
-                if (!throttle_neutral) {
+
+                if (steering_mode == STEERING_MODE_PIVOT) {
                     pivot_mix(
                         pivot_steering,
                         speed,
-                        &pivot_blend_start_left,
-                        &pivot_blend_start_right
+                        &left,
+                        &right
+                    );
+                } else if (steering_mode == STEERING_MODE_DRIVE) {
+                    float velocity =
+                        apply_speed_limit(throttle, speed);
+
+                    float drive_left = 0.0f;
+                    float drive_right = 0.0f;
+
+                    arc_drive_mix(
+                        steering,
+                        velocity,
+                        DRIVE_CURVATURE_EXPONENT,
+                        &curvature,
+                        &drive_left,
+                        &drive_right
                     );
 
-                    steering_mode = STEERING_MODE_DRIVE;
-                    pivot_to_drive_blending = true;
-                    pivot_to_drive_start_us = mix_now;
-                } else if (steering_neutral) {
-                    steering_mode = STEERING_MODE_IDLE;
-                }
-            } else if (throttle_neutral && steering_neutral) {
-                steering_mode = STEERING_MODE_IDLE;
-                pivot_to_drive_blending = false;
-            }
+                    if (pivot_to_drive_blending) {
+                        int64_t elapsed_us =
+                            mix_now - pivot_to_drive_start_us;
 
-            if (steering_mode == STEERING_MODE_PIVOT) {
-                pivot_mix(
-                    pivot_steering,
-                    speed,
-                    &left,
-                    &right
-                );
-            } else if (steering_mode == STEERING_MODE_DRIVE) {
-                /*
-                 * Apply the fixed calibration speed ceiling before mixing.
-                 * Wheel ratio depends only on shaped steering curvature,
-                 * so commanded radius remains independent of throttle.
-                 */
-                float velocity =
-                    apply_speed_limit(throttle, speed);
+                        int64_t blend_us =
+                            (int64_t)PIVOT_TO_DRIVE_BLEND_MS * 1000LL;
 
-                float drive_left = 0.0f;
-                float drive_right = 0.0f;
+                        float blend =
+                            blend_us <= 0
+                                ? 1.0f
+                                : (float)elapsed_us / (float)blend_us;
 
-                arc_drive_mix(
-                    steering,
-                    velocity,
-                    DRIVE_CURVATURE_EXPONENT,
-                    &curvature,
-                    &drive_left,
-                    &drive_right
-                );
+                        if (blend >= 1.0f) {
+                            blend = 1.0f;
+                            pivot_to_drive_blending = false;
+                        } else if (blend < 0.0f) {
+                            blend = 0.0f;
+                        }
 
-                if (pivot_to_drive_blending) {
-                    int64_t elapsed_us =
-                        mix_now - pivot_to_drive_start_us;
-                    int64_t blend_us =
-                        (int64_t)PIVOT_TO_DRIVE_BLEND_MS * 1000LL;
+                        left =
+                            pivot_blend_start_left +
+                            blend * (drive_left - pivot_blend_start_left);
 
-                    float blend =
-                        blend_us <= 0
-                            ? 1.0f
-                            : (float)elapsed_us / (float)blend_us;
-
-                    if (blend >= 1.0f) {
-                        blend = 1.0f;
-                        pivot_to_drive_blending = false;
-                    } else if (blend < 0.0f) {
-                        blend = 0.0f;
+                        right =
+                            pivot_blend_start_right +
+                            blend * (drive_right - pivot_blend_start_right);
+                    } else {
+                        left = drive_left;
+                        right = drive_right;
                     }
-
-                    left =
-                        pivot_blend_start_left +
-                        blend * (drive_left - pivot_blend_start_left);
-
-                    right =
-                        pivot_blend_start_right +
-                        blend * (drive_right - pivot_blend_start_right);
                 } else {
-                    left = drive_left;
-                    right = drive_right;
+                    left = 0.0f;
+                    right = 0.0f;
                 }
-            } else {
-                left = 0.0f;
-                right = 0.0f;
             }
         } else {
-            /*
-             * Invalid controls must never leave a stale pivot/drive
-             * transition armed.
-             */
             pivot_to_drive_blending = false;
         }
 
@@ -1223,8 +1258,12 @@ static void transmitter_task(void *arg)
             (uint16_t)lroundf(speed * 1000.0f);
         packet.flags =
             (controls_valid ? 0U : RC_CONTROL_FLAG_INVALID) |
-            (steering_mode == STEERING_MODE_PIVOT
+            (!stupid_mode &&
+             steering_mode == STEERING_MODE_PIVOT
                 ? RC_CONTROL_FLAG_PIVOT
+                : 0U) |
+            (stupid_mode
+                ? RC_CONTROL_FLAG_STUPID
                 : 0U);
 
         if (!espnow_send_pending) {
@@ -1318,7 +1357,7 @@ static void transmitter_task(void *arg)
             packet.sequence++;
             packet.left = 0;
             packet.right = 0;
-            packet.flags = 1;
+            packet.flags = RC_CONTROL_FLAG_INVALID;
 
             esp_now_send(
                 broadcast_mac,
