@@ -255,6 +255,14 @@ static volatile bool espnow_send_pending = false;
 static volatile int64_t last_ack_us = 0;
 static volatile uint16_t last_ack_sequence = 0;
 
+/* ESP-NOW link diagnostics (TX perspective). */
+static volatile uint32_t tx_mac_send_ok = 0;
+static volatile uint32_t tx_mac_send_fail = 0;
+static volatile uint32_t tx_send_submit_err = 0;
+static volatile uint32_t tx_ack_rx_count = 0;
+static volatile int tx_ack_rssi = 0;
+static volatile bool tx_ack_rssi_valid = false;
+
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 static adc_cali_handle_t battery_cali_handle = NULL;
 static adc_channel_t battery_channel;
@@ -722,7 +730,13 @@ static void send_cb(const wifi_tx_info_t *tx_info,
                     esp_now_send_status_t status)
 {
     (void)tx_info;
-    (void)status;
+
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        tx_mac_send_ok++;
+    } else {
+        tx_mac_send_fail++;
+    }
+
     espnow_send_pending = false;
 }
 
@@ -748,6 +762,12 @@ static void tx_recv_cb(const esp_now_recv_info_t *info,
 
     last_ack_sequence = ack.sequence;
     last_ack_us = esp_timer_get_time();
+    tx_ack_rx_count++;
+
+    if (info->rx_ctrl != NULL) {
+        tx_ack_rssi = info->rx_ctrl->rssi;
+        tx_ack_rssi_valid = true;
+    }
 }
 
 
@@ -893,6 +913,7 @@ static void transmitter_task(void *arg)
 
             if (err != ESP_OK) {
                 espnow_send_pending = false;
+                tx_send_submit_err++;
 
                 ESP_LOGW(
                     TAG,
@@ -991,10 +1012,17 @@ static void transmitter_task(void *arg)
         if (++log_div >= 20) {
             log_div = 0;
 
+            int64_t ack_age_ms =
+                last_ack_us == 0
+                    ? -1
+                    : (now - last_ack_us) / 1000LL;
+
             ESP_LOGI(
                 TAG,
                 "steer=%+.3f throttle=%+.3f expo=%.2f speed=%.2f | "
-                "L=%+.3f R=%+.3f | mode=%d frame=%s | link=%s ack=%u",
+                "L=%+.3f R=%+.3f | mode=%d frame=%s | "
+                "link=%s ack=%u age=%lldms rssi=%s%d | "
+                "txMAC=%lu/%lu submitErr=%lu ackRx=%lu",
                 steering,
                 throttle,
                 expo,
@@ -1004,7 +1032,14 @@ static void transmitter_task(void *arg)
                 mode_position,
                 steering_frame > 0 ? "FWD" : "REV",
                 linked ? "OK" : "WAIT",
-                (unsigned)last_ack_sequence
+                (unsigned)last_ack_sequence,
+                (long long)ack_age_ms,
+                tx_ack_rssi_valid ? "" : "?",
+                tx_ack_rssi_valid ? tx_ack_rssi : 0,
+                (unsigned long)tx_mac_send_ok,
+                (unsigned long)tx_mac_send_fail,
+                (unsigned long)tx_send_submit_err,
+                (unsigned long)tx_ack_rx_count
             );
         }
 
@@ -1212,6 +1247,16 @@ static volatile int64_t last_packet_us = 0;
 
 static uint32_t rx_packet_count = 0;
 static int64_t rx_last_log_us = 0;
+
+/* ESP-NOW link diagnostics (RX perspective). */
+static volatile int rx_control_rssi = 0;
+static volatile bool rx_control_rssi_valid = false;
+static uint16_t rx_last_sequence = 0;
+static bool rx_sequence_valid = false;
+static uint32_t rx_sequence_skips = 0;
+static volatile uint32_t rx_ack_mac_ok = 0;
+static volatile uint32_t rx_ack_mac_fail = 0;
+static volatile uint32_t rx_ack_submit_err = 0;
 
 #define RX_RTC_MAGIC 0x52585231UL
 
@@ -1579,6 +1624,19 @@ static void set_motors(int16_t left, int16_t right)
 }
 
 
+static void rx_send_cb(const wifi_tx_info_t *tx_info,
+                       esp_now_send_status_t status)
+{
+    (void)tx_info;
+
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        rx_ack_mac_ok++;
+    } else {
+        rx_ack_mac_fail++;
+    }
+}
+
+
 static void recv_cb(const esp_now_recv_info_t *info,
                     const uint8_t *data,
                     int len)
@@ -1599,6 +1657,22 @@ static void recv_cb(const esp_now_recv_info_t *info,
         return;
     }
 
+    if (info->rx_ctrl != NULL) {
+        rx_control_rssi = info->rx_ctrl->rssi;
+        rx_control_rssi_valid = true;
+    }
+
+    if (rx_sequence_valid) {
+        uint16_t delta = (uint16_t)(packet.sequence - rx_last_sequence);
+
+        if (delta > 1) {
+            rx_sequence_skips += (uint32_t)(delta - 1U);
+        }
+    }
+
+    rx_last_sequence = packet.sequence;
+    rx_sequence_valid = true;
+
     last_packet_us = esp_timer_get_time();
 
     /*
@@ -1616,12 +1690,20 @@ static void recv_cb(const esp_now_recv_info_t *info,
 
         ESP_LOGI(
             TAG,
-            "RX #%lu seq=%u | L=%+.3f R=%+.3f | speed=%u",
+            "RX #%lu seq=%u rssi=%s%d skips=%lu | "
+            "L=%+.3f R=%+.3f speed=%u | "
+            "ackMAC=%lu/%lu submitErr=%lu",
             (unsigned long)rx_packet_count,
             packet.sequence,
+            rx_control_rssi_valid ? "" : "?",
+            rx_control_rssi_valid ? rx_control_rssi : 0,
+            (unsigned long)rx_sequence_skips,
             packet.left / 1000.0f,
             packet.right / 1000.0f,
-            packet.speed
+            packet.speed,
+            (unsigned long)rx_ack_mac_ok,
+            (unsigned long)rx_ack_mac_fail,
+            (unsigned long)rx_ack_submit_err
         );
     }
 }
@@ -1661,6 +1743,8 @@ static void motor_task(void *arg)
             );
 
             if (ack_err != ESP_OK) {
+                rx_ack_submit_err++;
+
                 ESP_LOGW(
                     TAG,
                     "ACK send failed: %s",
@@ -1950,6 +2034,10 @@ static void receiver_init(void)
     }
 
     ESP_ERROR_CHECK(esp_now_init());
+
+    ESP_ERROR_CHECK(
+        esp_now_register_send_cb(rx_send_cb)
+    );
 
     esp_now_peer_info_t peer = {0};
 
