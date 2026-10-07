@@ -8,7 +8,8 @@
 #define RC_MAGIC                0x52434331UL   // "RCC1"
 #define RC_TX_PERIOD_MS         40             // 25 Hz
 #define RC_FAILSAFE_MS          160            // four nominal control periods
-#define RC_ACK_PERIOD_MS        100            // 10 Hz RX application heartbeat
+#define RC_ACK_PERIOD_MS        100            // 10 Hz average application heartbeat
+#define RC_ACK_DELAY_MS         10             // place ACK between 40 ms control slots
 #define RC_MAC_LINK_TIMEOUT_MS  250
 #define RC_APP_LINK_TIMEOUT_MS  500
 
