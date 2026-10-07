@@ -59,8 +59,8 @@
 #define CURVATURE_POT_ADC_MIN            4
 #define CURVATURE_POT_ADC_MAX         3385
 #define CURVATURE_POT_INVERT             0
-#define CURVATURE_EXPONENT_MIN         5.00f
-#define CURVATURE_EXPONENT_MAX        20.00f
+#define CURVATURE_EXPONENT_MIN         1.00f
+#define CURVATURE_EXPONENT_MAX         5.00f
 
 // Three-way switch selects exact expo for both steering and throttle.
 // Motor speed ceiling is fixed at 100% during this calibration.
@@ -190,6 +190,14 @@
 #define MOTOR_PWM_START_MIN     0.25f
 #define MOTOR_PWM_RUN_MIN       0.15f
 #define MOTOR_START_BOOST_MS    100
+
+// Below this logical wheel demand, continuous drive is replaced by
+// low-frequency pulse-density control at the threshold drive level.
+// This extends average wheel speed below the loaded continuous-running
+// floor while preserving the requested mean demand approximately.
+#define MOTOR_CHOPPER_MAX_COMMAND   0.15f
+#define MOTOR_CHOPPER_PERIOD_MS      100
+#define MOTOR_CONTROL_UPDATE_MS       10
 
 // Set these after confirming physical direction.
 #define LEFT_INVERT             0
