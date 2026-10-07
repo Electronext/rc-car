@@ -1391,25 +1391,24 @@ static void transmitter_task(void *arg)
 
             ESP_LOGI(
                 TAG,
-                "steerRaw=%+.3f steer=%+.3f pivot=%+.3f p=%.2f | "
-                "k=%+.3f g=%.2f throttle=%+.3f expo=%.2f speed=%.2f | "
-                "L=%+.3f R=%+.3f | mode=%d mix=%s%s | "
+                "steer=%+.3f pivot=%+.3f p=%.2f | "
+                "k=%+.3f g=%.2f throttle=%+.3f expoT=%.2f speed=%.2f | "
+                "L=%+.3f R=%+.3f | mode=%s mix=%s%s | "
                 "link=%s hbSeq=%u age=%lldms hbRSSI=%s%d ctrlRSSI=%d "
                 "rxPWM=%+.3f/%+.3f rxVBAT=%.3fV fs=%lu skips=%lu gapMax=%lums | "
                 "tx=%lu/%lu submitErr=%lu deferred=%lu hbRx=%lu | "
                 "cb=%lu/%lums >40/100/250=%lu/%lu/%lu",
-                steering_raw_value,
                 steering,
                 pivot_steering,
-                pivot_exponent,
+                PIVOT_EXPO_EXPONENT,
                 curvature,
                 DRIVE_CURVATURE_EXPONENT,
                 throttle,
-                expo,
+                throttle_expo,
                 speed,
                 left,
                 right,
-                mode_position,
+                drive_mode_name(mode_position),
                 steering_mode_name(steering_mode),
                 pivot_to_drive_blending ? "/BLEND" : "",
                 linked ? "OK" : "WAIT",
