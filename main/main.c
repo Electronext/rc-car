@@ -608,58 +608,85 @@ static float apply_speed_limit(float value, float limit)
 }
 
 
-static int steering_frame_update(uint16_t throttle_raw,
-                                 int current_frame)
+typedef enum {
+    STEERING_MODE_IDLE = 0,
+    STEERING_MODE_PIVOT,
+    STEERING_MODE_DRIVE
+} steering_mode_t;
+
+
+static const char *steering_mode_name(steering_mode_t mode)
 {
-    if (throttle_raw <= THROTTLE_STEER_FRAME_FORWARD_RAW) {
-        return 1;
+    switch (mode) {
+        case STEERING_MODE_IDLE:
+            return "IDLE";
+        case STEERING_MODE_PIVOT:
+            return "PIVOT";
+        case STEERING_MODE_DRIVE:
+        default:
+            return "DRIVE";
     }
-
-    if (throttle_raw >= THROTTLE_STEER_FRAME_REVERSE_RAW) {
-        return -1;
-    }
-
-    return current_frame;
 }
 
 
-static void skid_steer_mix(float steering,
-                           float throttle,
-                           int steering_frame,
-                           float *left,
-                           float *right)
+/*
+ * Normal drive mixer.
+ *
+ * Steering is normalized curvature, independent of signed velocity:
+ *
+ *     q = (1 - |s|) / (1 + |s|)
+ *
+ * q is the inner/outer wheel-speed ratio. Therefore:
+ *   s = 0    -> q = 1, straight line
+ *   |s| = 1 -> q = 0, inner wheel stopped
+ *
+ * Reversing velocity reverses both wheels without changing q, so the
+ * same steering command follows the same geometric arc in reverse.
+ */
+static void arc_drive_mix(float steering,
+                          float velocity,
+                          float *left,
+                          float *right)
 {
     float steer_mag = fabsf(steering);
-    float throttle_mag = fabsf(throttle);
-    float reduction = TURN_INNER_REDUCTION_FULL_THROTTLE;
 
-    if (steer_mag > 1.0f) steer_mag = 1.0f;
-    if (throttle_mag > 1.0f) throttle_mag = 1.0f;
+    if (steer_mag > 1.0f) {
+        steer_mag = 1.0f;
+    }
 
-    if (reduction < 0.0f) reduction = 0.0f;
-    if (reduction > 1.0f) reduction = 1.0f;
+    float inner_ratio =
+        (1.0f - steer_mag) /
+        (1.0f + steer_mag);
 
-    float mean =
-        throttle * (1.0f - 0.5f * reduction * steer_mag);
-
-    float differential_gain =
-        (1.0f - throttle_mag) +
-        throttle_mag * (0.5f * reduction);
-
-    float differential =
-        -steering * (float)steering_frame * differential_gain;
-
-    float l = mean + differential;
-    float r = mean - differential;
-
-    if (l >  1.0f) l =  1.0f;
-    if (l < -1.0f) l = -1.0f;
-    if (r >  1.0f) r =  1.0f;
-    if (r < -1.0f) r = -1.0f;
-
-    *left = l;
-    *right = r;
+    if (steering > 0.0f) {
+        *left = velocity;
+        *right = velocity * inner_ratio;
+    } else if (steering < 0.0f) {
+        *left = velocity * inner_ratio;
+        *right = velocity;
+    } else {
+        *left = velocity;
+        *right = velocity;
+    }
 }
+
+
+/*
+ * Zero-throttle pivot. The three-position speed selector still limits
+ * pivot authority, using the same soft limiter as normal drive speed.
+ */
+static void pivot_mix(float steering,
+                      float speed_limit,
+                      float *left,
+                      float *right)
+{
+    float pivot =
+        apply_speed_limit(steering, speed_limit);
+
+    *left = pivot;
+    *right = -pivot;
+}
+
 
 static void enter_timed_sleep(uint8_t reason,
                               uint32_t sleep_ms,
@@ -888,7 +915,18 @@ static void transmitter_task(void *arg)
 
     int64_t last_activity_us = esp_timer_get_time();
     int64_t disconnected_since_us = 0;
-    int steering_frame = 1;
+
+    /*
+     * Start in DRIVE rather than IDLE so pivot steering is not armed
+     * merely because the transmitter boots with steering already held.
+     * Returning both controls to centre arms IDLE.
+     */
+    steering_mode_t steering_mode = STEERING_MODE_DRIVE;
+    bool pivot_to_drive_blending = false;
+    int64_t pivot_to_drive_start_us = 0;
+    float pivot_blend_start_left = 0.0f;
+    float pivot_blend_start_right = 0.0f;
+
     int activity_speed_raw = adc_read_channel(speed_channel);
     int activity_mode_position =
         mode_switch_position_from_raw(
@@ -909,16 +947,6 @@ static void transmitter_task(void *arg)
         int mode_raw = adc_read_channel(mode_switch_channel);
         int mode_position =
             mode_switch_position_from_raw(mode_raw);
-
-        if (throttle_err == ESP_OK &&
-            rc_as5048b_sample_valid(&throttle_sample)) {
-
-            steering_frame =
-                steering_frame_update(
-                    throttle_sample.angle,
-                    steering_frame
-                );
-        }
 
         bool controls_valid =
             steering_err == ESP_OK &&
@@ -950,17 +978,108 @@ static void transmitter_task(void *arg)
                 throttle_expo
             );
 
-            skid_steer_mix(
-                steering,
-                throttle,
-                steering_frame,
-                &left,
-                &right
-            );
-        }
+            bool steering_neutral = steering == 0.0f;
+            bool throttle_neutral = throttle == 0.0f;
+            int64_t mix_now = esp_timer_get_time();
 
-        left = apply_speed_limit(left, speed);
-        right = apply_speed_limit(right, speed);
+            /*
+             * Pivot is armed only from a fully centred IDLE state.
+             * DRIVE remains latched through throttle zero/reversal while
+             * steering is held, so crossing zero cannot unexpectedly
+             * become differential steering.
+             */
+            if (steering_mode == STEERING_MODE_IDLE) {
+                if (!throttle_neutral) {
+                    steering_mode = STEERING_MODE_DRIVE;
+                } else if (!steering_neutral) {
+                    steering_mode = STEERING_MODE_PIVOT;
+                }
+            } else if (steering_mode == STEERING_MODE_PIVOT) {
+                if (!throttle_neutral) {
+                    pivot_mix(
+                        steering,
+                        speed,
+                        &pivot_blend_start_left,
+                        &pivot_blend_start_right
+                    );
+
+                    steering_mode = STEERING_MODE_DRIVE;
+                    pivot_to_drive_blending = true;
+                    pivot_to_drive_start_us = mix_now;
+                } else if (steering_neutral) {
+                    steering_mode = STEERING_MODE_IDLE;
+                }
+            } else if (throttle_neutral && steering_neutral) {
+                steering_mode = STEERING_MODE_IDLE;
+                pivot_to_drive_blending = false;
+            }
+
+            if (steering_mode == STEERING_MODE_PIVOT) {
+                pivot_mix(
+                    steering,
+                    speed,
+                    &left,
+                    &right
+                );
+            } else if (steering_mode == STEERING_MODE_DRIVE) {
+                /*
+                 * Apply LOW/MED/HIGH to signed velocity before mixing.
+                 * The wheel ratio therefore depends only on steering,
+                 * so commanded radius is independent of throttle.
+                 */
+                float velocity =
+                    apply_speed_limit(throttle, speed);
+
+                float drive_left = 0.0f;
+                float drive_right = 0.0f;
+
+                arc_drive_mix(
+                    steering,
+                    velocity,
+                    &drive_left,
+                    &drive_right
+                );
+
+                if (pivot_to_drive_blending) {
+                    int64_t elapsed_us =
+                        mix_now - pivot_to_drive_start_us;
+                    int64_t blend_us =
+                        (int64_t)PIVOT_TO_DRIVE_BLEND_MS * 1000LL;
+
+                    float blend =
+                        blend_us <= 0
+                            ? 1.0f
+                            : (float)elapsed_us / (float)blend_us;
+
+                    if (blend >= 1.0f) {
+                        blend = 1.0f;
+                        pivot_to_drive_blending = false;
+                    } else if (blend < 0.0f) {
+                        blend = 0.0f;
+                    }
+
+                    left =
+                        pivot_blend_start_left +
+                        blend * (drive_left - pivot_blend_start_left);
+
+                    right =
+                        pivot_blend_start_right +
+                        blend * (drive_right - pivot_blend_start_right);
+                } else {
+                    left = drive_left;
+                    right = drive_right;
+                }
+            } else {
+                left = 0.0f;
+                right = 0.0f;
+            }
+        } else {
+            /*
+             * Invalid controls must never leave a stale pivot/drive
+             * transition armed.
+             */
+            pivot_to_drive_blending = false;
+        }
 
         packet.left =
             (int16_t)lroundf(left * 1000.0f);
@@ -1095,7 +1214,7 @@ static void transmitter_task(void *arg)
             ESP_LOGI(
                 TAG,
                 "steer=%+.3f throttle=%+.3f expoT/S=%.2f/%.2f speed=%.2f | "
-                "L=%+.3f R=%+.3f | mode=%d frame=%s | "
+                "L=%+.3f R=%+.3f | mode=%d mix=%s%s | "
                 "link=%s hbSeq=%u age=%lldms hbRSSI=%s%d ctrlRSSI=%d "
                 "rxVBAT=%.3fV fs=%lu skips=%lu gapMax=%lums | "
                 "tx=%lu/%lu submitErr=%lu deferred=%lu hbRx=%lu | "
@@ -1108,7 +1227,8 @@ static void transmitter_task(void *arg)
                 left,
                 right,
                 mode_position,
-                steering_frame > 0 ? "FWD" : "REV",
+                steering_mode_name(steering_mode),
+                pivot_to_drive_blending ? "/BLEND" : "",
                 linked ? "OK" : "WAIT",
                 (unsigned)last_heartbeat_sequence,
                 (long long)heartbeat_age_ms,
@@ -1776,7 +1896,14 @@ static void recv_cb(const esp_now_recv_info_t *info,
         uint16_t delta =
             (uint16_t)(packet.sequence - rx_last_sequence);
 
-        if (delta > 1) {
+        if (delta > 0x8000U &&
+            packet.sequence <= 1024U) {
+            /*
+             * TX sequence numbers restart near zero after a TX reboot.
+             * Treat that large backwards jump as a new sequence epoch
+             * rather than ~65k lost control packets.
+             */
+        } else if (delta > 1U && delta <= 0x8000U) {
             rx_sequence_skips += (uint32_t)(delta - 1U);
         }
     }
