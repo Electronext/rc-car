@@ -93,7 +93,7 @@
 #define STEERING_RAW_MAX              7800
 
 // Set to 1 later if the physical steering direction is reversed.
-#define STEERING_INVERT               1
+#define STEERING_INVERT               0
 
 // Throttle calibration (AS5048B at 0x42).
 // Forward decreases the raw angle; reverse increases it.
@@ -172,7 +172,7 @@
 //
 // When throttle is introduced during a pivot, blend into normal arc
 // drive so the inner motor passes smoothly through zero.
-#define PIVOT_TO_DRIVE_BLEND_MS             120
+#define PIVOT_TO_DRIVE_BLEND_MS             500
 
 // Receiver -> SA8302
 // Fit external pulldowns (recommended 4.7k) from all four SA8302
@@ -190,7 +190,7 @@
 #define MOTOR_PWM_BITS          10
 #define MOTOR_PWM_MAX           ((1 << MOTOR_PWM_BITS) - 1)
 #define MOTOR_PWM_START_MIN     0.25f
-#define MOTOR_PWM_RUN_MIN       0.20f
+#define MOTOR_PWM_RUN_MIN       0.15f
 #define MOTOR_START_BOOST_MS    100
 
 // Set these after confirming physical direction.
