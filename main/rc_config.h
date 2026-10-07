@@ -1,7 +1,7 @@
 #pragma once
 
 // Change to 0 for the car/receiver.
-#define RC_TRANSMITTER          1
+#define RC_TRANSMITTER          0
 
 // ESP-NOW
 #define RC_WIFI_CHANNEL         6
@@ -70,7 +70,7 @@
 
 // Steering needs more centre softening than throttle. Steering expo is
 // throttle expo multiplied by this factor, then clamped to 1.0.
-#define STEERING_EXPO_MULTIPLIER       1.30f
+#define STEERING_EXPO_MULTIPLIER       1.20f
 
 // Three-way switch speed ceilings: LOW / CENTER / HIGH.
 #define SPEED_LEVEL_LOW                0.30f
