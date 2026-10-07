@@ -792,10 +792,17 @@ static void status_task(void *arg)
 
         bool charging = is_charging();
 
-        bool linked =
+        bool rf_linked =
+            last_tx_mac_success_us != 0 &&
+            (now - last_tx_mac_success_us) <=
+                ((int64_t)RC_MAC_LINK_TIMEOUT_MS * 1000LL);
+
+        bool app_linked =
             last_ack_us != 0 &&
             (now - last_ack_us) <=
-                ((int64_t)RC_LINK_TIMEOUT_MS * 1000LL);
+                ((int64_t)RC_APP_LINK_TIMEOUT_MS * 1000LL);
+
+        bool linked = rf_linked && app_linked;
 
         if (!charging &&
             battery_mv < BATTERY_LOW_CUTOFF_MV) {
@@ -906,6 +913,7 @@ static void transmitter_task(void *arg)
         packet.flags = controls_valid ? 0 : 1;
 
         if (!espnow_send_pending) {
+            uint16_t previous_sequence = packet.sequence;
             packet.sequence++;
             espnow_send_pending = true;
 
@@ -916,6 +924,7 @@ static void transmitter_task(void *arg)
             );
 
             if (err != ESP_OK) {
+                packet.sequence = previous_sequence;
                 espnow_send_pending = false;
                 tx_send_submit_err++;
 
