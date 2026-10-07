@@ -29,6 +29,7 @@
 #define STATUS_LED_GPIO         3
 #define MODE_SWITCH_GPIO        4   // 3-way speed selector
 #define CHARGE_STATUS_GPIO      5
+#define CHARGE_STATUS_ENABLED   0   // !CHG not wired on TX yet
 #else
 // RX:
 //   GPIO3 VBAT: LiPo+ -> 100k -> GPIO3 -> 100k -> GND
@@ -37,6 +38,7 @@
 #define BATTERY_GPIO            3
 #define VUSB_PRESENT_GPIO       1
 #define CHARGE_STATUS_GPIO      4
+#define CHARGE_STATUS_ENABLED   1
 #define STATUS_LED_GPIO         8
 #endif
 
