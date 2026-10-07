@@ -7,7 +7,7 @@
 #define RC_WIFI_CHANNEL         6
 #define RC_MAGIC                0x52434331UL   // "RCC1"
 #define RC_TX_PERIOD_MS         40             // 25 Hz control broadcast
-#define RC_FAILSAFE_MS          160            // four nominal control periods
+#define RC_FAILSAFE_MS          240            // six nominal control periods
 #define RC_HEARTBEAT_PERIOD_MS  200            // 5 Hz RX telemetry broadcast
 #define RC_HEARTBEAT_DELAY_MS   10             // send shortly after a control frame
 #define RC_HEARTBEAT_TIMEOUT_MS 500            // TX considers RX disconnected after this
@@ -181,18 +181,14 @@
 // Speed selection is handled by the three-way switch; the pot now
 // controls expo only.
 
-// Throttle-dependent skid steering.
-// At zero throttle, full steering counter-rotates both motors at the
-// speed-pot limit. At full throttle, full steering keeps the outer
-// motor at full demand and reduces the inner motor by this fraction.
-// 0.40 => inner motor runs at 60% of outer motor at full throttle.
-#define TURN_INNER_REDUCTION_FULL_THROTTLE  0.40f
-
-// Steering convention is latched forward/reverse while the throttle
-// lever crosses its existing neutral deadband. Forward decreases the
-// AS5048B raw angle; reverse increases it.
-#define THROTTLE_STEER_FRAME_FORWARD_RAW    13960
-#define THROTTLE_STEER_FRAME_REVERSE_RAW    13990
+// Curvature steering.
+// In normal drive, steering sets wheel-speed ratio (therefore radius)
+// independently of throttle. Zero-throttle differential steering is
+// available only when steering leaves centre while throttle is neutral.
+//
+// When throttle is introduced during a pivot, blend into normal arc
+// drive so the inner motor passes smoothly through zero.
+#define PIVOT_TO_DRIVE_BLEND_MS             120
 
 // Receiver -> SA8302
 // Fit external pulldowns (recommended 4.7k) from all four SA8302
