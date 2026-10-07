@@ -22,6 +22,8 @@
 
 #define DIAG_RING_MAGIC      0x52444731UL  /* RDG1 */
 #define DIAG_RING_VERSION    1
+#define LINK_RING_MAGIC      0x4C444731UL  /* LDG1 */
+#define LINK_RING_VERSION    1
 #define DIAG_RTC_MAGIC       0x52544344UL  /* RTCD */
 
 static const char *TAG = "RXDIAG";
@@ -52,6 +54,39 @@ typedef struct {
     uint32_t next_sequence;
     reset_diag_record_t records[RX_RESET_LOG_CAPACITY];
 } reset_diag_ring_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t sequence;
+    uint32_t uptime_ms;
+    uint16_t battery_mv;
+    int8_t rssi_last;
+    int8_t rssi_min;
+    uint8_t rssi_valid;
+    uint8_t reserved;
+    uint32_t max_gap_ms;
+    uint16_t last_sequence;
+    uint16_t reserved2;
+    uint32_t packet_count;
+    uint32_t sequence_skips;
+    uint32_t sequence_skips_delta;
+    uint32_t failsafe_count;
+    uint32_t failsafe_delta;
+    uint32_t ack_mac_ok;
+    uint32_t ack_mac_fail;
+    uint32_t ack_mac_fail_delta;
+    uint32_t ack_submit_err;
+    uint32_t ack_submit_err_delta;
+} link_diag_record_t;
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t count;
+    uint16_t next;
+    uint16_t reserved;
+    uint32_t next_sequence;
+    link_diag_record_t records[RX_LINK_LOG_CAPACITY];
+} link_diag_ring_t;
 
 typedef struct {
     uint32_t magic;
@@ -145,6 +180,88 @@ static esp_err_t ring_save(nvs_handle_t nvs,
     return nvs_commit(nvs);
 }
 
+static void link_ring_init(link_diag_ring_t *ring)
+{
+    memset(ring, 0, sizeof(*ring));
+    ring->magic = LINK_RING_MAGIC;
+    ring->version = LINK_RING_VERSION;
+    ring->next_sequence = 1;
+}
+
+static esp_err_t link_ring_load(nvs_handle_t nvs,
+                                link_diag_ring_t *ring)
+{
+    size_t size = sizeof(*ring);
+    esp_err_t err = nvs_get_blob(nvs, "linkring", ring, &size);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        link_ring_init(ring);
+        return ESP_OK;
+    }
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (size != sizeof(*ring) ||
+        ring->magic != LINK_RING_MAGIC ||
+        ring->version != LINK_RING_VERSION ||
+        ring->count > RX_LINK_LOG_CAPACITY ||
+        ring->next >= RX_LINK_LOG_CAPACITY) {
+
+        ESP_LOGW(TAG, "Link log invalid; reinitialising");
+        link_ring_init(ring);
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t link_ring_save(nvs_handle_t nvs,
+                                const link_diag_ring_t *ring)
+{
+    esp_err_t err = nvs_set_blob(
+        nvs,
+        "linkring",
+        ring,
+        sizeof(*ring)
+    );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    return nvs_commit(nvs);
+}
+
+static void print_link_record(const link_diag_record_t *r)
+{
+    printf(
+        "L#%lu t=%lu ms VBAT=%.3f V "
+        "rssi=%s%d min=%s%d maxGap=%lu ms seq=%u packets=%lu | "
+        "skips=%lu (+%lu) failsafe=%lu (+%lu) | "
+        "ackMAC=%lu/%lu (+%lu fail) submitErr=%lu (+%lu)\n",
+        (unsigned long)r->sequence,
+        (unsigned long)r->uptime_ms,
+        (double)r->battery_mv / 1000.0,
+        r->rssi_valid ? "" : "?",
+        r->rssi_valid ? (int)r->rssi_last : 0,
+        r->rssi_valid ? "" : "?",
+        r->rssi_valid ? (int)r->rssi_min : 0,
+        (unsigned long)r->max_gap_ms,
+        (unsigned)r->last_sequence,
+        (unsigned long)r->packet_count,
+        (unsigned long)r->sequence_skips,
+        (unsigned long)r->sequence_skips_delta,
+        (unsigned long)r->failsafe_count,
+        (unsigned long)r->failsafe_delta,
+        (unsigned long)r->ack_mac_ok,
+        (unsigned long)r->ack_mac_fail,
+        (unsigned long)r->ack_mac_fail_delta,
+        (unsigned long)r->ack_submit_err,
+        (unsigned long)r->ack_submit_err_delta
+    );
+}
+
 static void print_record(const reset_diag_record_t *r)
 {
     printf(
@@ -184,7 +301,7 @@ static void dump_ring(void)
     esp_err_t err = nvs_open("rxdiag", NVS_READONLY, &nvs);
 
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        printf("RXDIAG: no retained reset records\n");
+        printf("RXDIAG: no retained diagnostic records\n");
         return;
     }
 
@@ -193,31 +310,59 @@ static void dump_ring(void)
         return;
     }
 
-    reset_diag_ring_t ring;
-    err = ring_load(nvs, &ring);
+    reset_diag_ring_t reset_ring;
+    err = ring_load(nvs, &reset_ring);
+
+    if (err != ESP_OK) {
+        printf("RXDIAG: reset ring load failed: %s\n", esp_err_to_name(err));
+        nvs_close(nvs);
+        return;
+    }
+
+    link_diag_ring_t link_ring;
+    err = link_ring_load(nvs, &link_ring);
     nvs_close(nvs);
 
     if (err != ESP_OK) {
-        printf("RXDIAG: ring load failed: %s\n", esp_err_to_name(err));
+        printf("RXDIAG: link ring load failed: %s\n", esp_err_to_name(err));
         return;
     }
 
     printf(
-        "RXDIAG: %u retained record(s), capacity %u\n",
-        (unsigned)ring.count,
+        "RXDIAG: %u retained reset record(s), capacity %u\n",
+        (unsigned)reset_ring.count,
         (unsigned)RX_RESET_LOG_CAPACITY
     );
 
     uint16_t first =
-        (uint16_t)((ring.next + RX_RESET_LOG_CAPACITY - ring.count) %
+        (uint16_t)((reset_ring.next + RX_RESET_LOG_CAPACITY -
+                    reset_ring.count) %
                    RX_RESET_LOG_CAPACITY);
 
-    for (uint16_t i = 0; i < ring.count; i++) {
+    for (uint16_t i = 0; i < reset_ring.count; i++) {
         uint16_t index =
             (uint16_t)((first + i) % RX_RESET_LOG_CAPACITY);
-        print_record(&ring.records[index]);
+        print_record(&reset_ring.records[index]);
+    }
+
+    printf(
+        "RXDIAG: %u retained link anomaly summary record(s), capacity %u\n",
+        (unsigned)link_ring.count,
+        (unsigned)RX_LINK_LOG_CAPACITY
+    );
+
+    first =
+        (uint16_t)((link_ring.next + RX_LINK_LOG_CAPACITY -
+                    link_ring.count) %
+                   RX_LINK_LOG_CAPACITY);
+
+    for (uint16_t i = 0; i < link_ring.count; i++) {
+        uint16_t index =
+            (uint16_t)((first + i) % RX_LINK_LOG_CAPACITY);
+        print_link_record(&link_ring.records[index]);
     }
 }
+
 
 static void clear_ring(void)
 {
@@ -229,18 +374,26 @@ static void clear_ring(void)
         return;
     }
 
-    reset_diag_ring_t ring;
-    ring_init(&ring);
+    reset_diag_ring_t reset_ring;
+    ring_init(&reset_ring);
 
-    err = ring_save(nvs, &ring);
+    err = ring_save(nvs, &reset_ring);
+
+    if (err == ESP_OK) {
+        link_diag_ring_t link_ring;
+        link_ring_init(&link_ring);
+        err = link_ring_save(nvs, &link_ring);
+    }
+
     nvs_close(nvs);
 
     if (err == ESP_OK) {
-        printf("RXDIAG: retained reset records cleared\n");
+        printf("RXDIAG: retained reset and link records cleared\n");
     } else {
         printf("RXDIAG: clear failed: %s\n", esp_err_to_name(err));
     }
 }
+
 
 void reset_diag_record_boot(int boot_battery_mv,
                             bool charging,
@@ -381,6 +534,82 @@ void reset_diag_runtime_sample(int battery_mv,
     rtc_snapshot.charging = charging ? 1 : 0;
 }
 
+void reset_diag_record_link_summary(int battery_mv,
+                                    int rssi_last,
+                                    int rssi_min,
+                                    bool rssi_valid,
+                                    uint32_t max_gap_ms,
+                                    uint16_t last_sequence,
+                                    uint32_t packet_count,
+                                    uint32_t sequence_skips,
+                                    uint32_t sequence_skips_delta,
+                                    uint32_t failsafe_count,
+                                    uint32_t failsafe_delta,
+                                    uint32_t ack_mac_ok,
+                                    uint32_t ack_mac_fail,
+                                    uint32_t ack_mac_fail_delta,
+                                    uint32_t ack_submit_err,
+                                    uint32_t ack_submit_err_delta)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("rxdiag", NVS_READWRITE, &nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "link nvs_open failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    link_diag_ring_t ring;
+    err = link_ring_load(nvs, &ring);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "link ring load failed: %s", esp_err_to_name(err));
+        nvs_close(nvs);
+        return;
+    }
+
+    link_diag_record_t r = {
+        .sequence = ring.next_sequence++,
+        .uptime_ms = (uint32_t)(esp_timer_get_time() / 1000LL),
+        .battery_mv = (uint16_t)(battery_mv < 0 ? 0 : battery_mv),
+        .rssi_last = (int8_t)rssi_last,
+        .rssi_min = (int8_t)rssi_min,
+        .rssi_valid = rssi_valid ? 1 : 0,
+        .max_gap_ms = max_gap_ms,
+        .last_sequence = last_sequence,
+        .packet_count = packet_count,
+        .sequence_skips = sequence_skips,
+        .sequence_skips_delta = sequence_skips_delta,
+        .failsafe_count = failsafe_count,
+        .failsafe_delta = failsafe_delta,
+        .ack_mac_ok = ack_mac_ok,
+        .ack_mac_fail = ack_mac_fail,
+        .ack_mac_fail_delta = ack_mac_fail_delta,
+        .ack_submit_err = ack_submit_err,
+        .ack_submit_err_delta = ack_submit_err_delta
+    };
+
+    ring.records[ring.next] = r;
+    ring.next =
+        (uint16_t)((ring.next + 1U) % RX_LINK_LOG_CAPACITY);
+
+    if (ring.count < RX_LINK_LOG_CAPACITY) {
+        ring.count++;
+    }
+
+    err = link_ring_save(nvs, &ring);
+    nvs_close(nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "link ring save failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGW(TAG, "Retained RX link anomaly summary:");
+    print_link_record(&r);
+}
+
+
 static void console_task(void *arg)
 {
     (void)arg;
@@ -474,6 +703,41 @@ void reset_diag_runtime_sample(int battery_mv,
     (void)linked;
     (void)charging;
     (void)packet_count;
+}
+
+void reset_diag_record_link_summary(int battery_mv,
+                                    int rssi_last,
+                                    int rssi_min,
+                                    bool rssi_valid,
+                                    uint32_t max_gap_ms,
+                                    uint16_t last_sequence,
+                                    uint32_t packet_count,
+                                    uint32_t sequence_skips,
+                                    uint32_t sequence_skips_delta,
+                                    uint32_t failsafe_count,
+                                    uint32_t failsafe_delta,
+                                    uint32_t ack_mac_ok,
+                                    uint32_t ack_mac_fail,
+                                    uint32_t ack_mac_fail_delta,
+                                    uint32_t ack_submit_err,
+                                    uint32_t ack_submit_err_delta)
+{
+    (void)battery_mv;
+    (void)rssi_last;
+    (void)rssi_min;
+    (void)rssi_valid;
+    (void)max_gap_ms;
+    (void)last_sequence;
+    (void)packet_count;
+    (void)sequence_skips;
+    (void)sequence_skips_delta;
+    (void)failsafe_count;
+    (void)failsafe_delta;
+    (void)ack_mac_ok;
+    (void)ack_mac_fail;
+    (void)ack_mac_fail_delta;
+    (void)ack_submit_err;
+    (void)ack_submit_err_delta;
 }
 
 void reset_diag_start_console_task(void)
