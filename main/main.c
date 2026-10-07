@@ -894,8 +894,9 @@ static bool controls_moved_since_sleep(uint16_t steering_raw,
         return true;
     }
 
-    if (abs((int)throttle_expo_raw - (int)rtc_throttle_expo_raw) >=
-        TX_WAKE_THROTTLE_EXPO_COUNTS) {
+    if (mode_position <= 0 &&
+        abs((int)throttle_expo_raw - (int)rtc_throttle_expo_raw) >=
+            TX_WAKE_THROTTLE_EXPO_COUNTS) {
         return true;
     }
 
@@ -1305,7 +1306,7 @@ static void transmitter_task(void *arg)
 
         if (steering != 0.0f ||
             throttle != 0.0f ||
-            throttle_expo_changed ||
+            (!stupid_mode && throttle_expo_changed) ||
             mode_changed) {
 
             last_activity_us = now;
