@@ -835,10 +835,14 @@ static void status_task(void *arg)
             (now - last_tx_mac_success_us) <=
                 ((int64_t)RC_MAC_LINK_TIMEOUT_MS * 1000LL);
 
+#if RC_APP_ACK_ENABLED
         bool app_linked =
             last_ack_us != 0 &&
             (now - last_ack_us) <=
                 ((int64_t)RC_APP_LINK_TIMEOUT_MS * 1000LL);
+#else
+        bool app_linked = true;
+#endif
 
         bool linked = rf_linked && app_linked;
 
@@ -1009,10 +1013,14 @@ static void transmitter_task(void *arg)
             (now - last_tx_mac_success_us) <=
                 ((int64_t)RC_MAC_LINK_TIMEOUT_MS * 1000LL);
 
+#if RC_APP_ACK_ENABLED
         bool app_linked =
             last_ack_us != 0 &&
             (now - last_ack_us) <=
                 ((int64_t)RC_APP_LINK_TIMEOUT_MS * 1000LL);
+#else
+        bool app_linked = true;
+#endif
 
         bool linked = rf_linked && app_linked;
 
@@ -1095,7 +1103,11 @@ static void transmitter_task(void *arg)
                 mode_position,
                 steering_frame > 0 ? "FWD" : "REV",
                 rf_linked ? "OK" : "WAIT",
+#if RC_APP_ACK_ENABLED
                 app_linked ? "OK" : "WAIT",
+#else
+                "OFF",
+#endif
                 (unsigned)last_ack_sequence,
                 (long long)ack_age_ms,
                 tx_ack_rssi_valid ? "" : "?",
@@ -1282,6 +1294,10 @@ static void transmitter_init(void)
         rx_mac[0], rx_mac[1], rx_mac[2],
         rx_mac[3], rx_mac[4], rx_mac[5]
     );
+
+#if !RC_APP_ACK_ENABLED
+    ESP_LOGW(TAG, "Application ACK disabled: one-way ESP-NOW diagnostic mode");
+#endif
 
     xTaskCreate(
         transmitter_task,
@@ -1761,8 +1777,11 @@ static void recv_cb(const esp_now_recv_info_t *info,
 
     rx_last_sequence = packet.sequence;
     rx_sequence_valid = true;
+
+#if RC_APP_ACK_ENABLED
     rx_ack_latest_sequence = packet.sequence;
     rx_ack_sequence_valid = true;
+#endif
 
     int64_t now = esp_timer_get_time();
     int64_t previous_packet_us = last_packet_us;
@@ -1784,9 +1803,11 @@ static void recv_cb(const esp_now_recv_info_t *info,
      * limits itself to the configured average heartbeat period and
      * deliberately transmits shortly after a control frame.
      */
+#if RC_APP_ACK_ENABLED
     if (rx_ack_task_handle != NULL) {
         xTaskNotifyGive(rx_ack_task_handle);
     }
+#endif
 
     /*
      * Don't do motor peripheral work in the WiFi callback.
@@ -2292,9 +2313,11 @@ static void receiver_init(void)
 
     ESP_ERROR_CHECK(esp_now_init());
 
+#if RC_APP_ACK_ENABLED
     ESP_ERROR_CHECK(
         esp_now_register_send_cb(rx_send_cb)
     );
+#endif
 
     esp_now_peer_info_t peer = {0};
 
@@ -2323,6 +2346,10 @@ static void receiver_init(void)
         tx_mac[3], tx_mac[4], tx_mac[5]
     );
 
+#if !RC_APP_ACK_ENABLED
+    ESP_LOGW(TAG, "Application ACK disabled: RX radio-silent diagnostic mode");
+#endif
+
     rx_radio_start_us = esp_timer_get_time();
 
     if (rx_poll_wake) {
@@ -2333,6 +2360,7 @@ static void receiver_init(void)
         );
     }
 
+#if RC_APP_ACK_ENABLED
     xTaskCreate(
         rx_ack_task,
         "rx_ack",
@@ -2341,6 +2369,7 @@ static void receiver_init(void)
         5,
         &rx_ack_task_handle
     );
+#endif
 
     xTaskCreate(
         motor_task,
