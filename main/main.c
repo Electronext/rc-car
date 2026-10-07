@@ -644,7 +644,7 @@ static const char *steering_mode_name(steering_mode_t mode)
  */
 static void arc_drive_mix(float steering,
                           float velocity,
-                          float shape,
+                          float exponent,
                           float *curvature,
                           float *left,
                           float *right)
@@ -655,12 +655,12 @@ static void arc_drive_mix(float steering,
         steer_mag = 1.0f;
     }
 
-    if (shape < 0.0f) shape = 0.0f;
-    if (shape > 1.0f) shape = 1.0f;
+    if (exponent < 1.0f) {
+        exponent = 1.0f;
+    }
 
     float k =
-        steer_mag +
-        shape * steer_mag * (1.0f - steer_mag);
+        1.0f - powf(1.0f - steer_mag, exponent);
 
     if (k > 1.0f) {
         k = 1.0f;
