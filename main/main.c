@@ -1878,7 +1878,9 @@ enum {
     PWM_L_FWD = LEDC_CHANNEL_0,
     PWM_L_REV = LEDC_CHANNEL_1,
     PWM_R_FWD = LEDC_CHANNEL_2,
-    PWM_R_REV = LEDC_CHANNEL_3
+    PWM_R_REV = LEDC_CHANNEL_3,
+    PWM_HEADLIGHTS = LEDC_CHANNEL_4,
+    PWM_TAIL_LIGHTS = LEDC_CHANNEL_5
 };
 
 typedef struct {
@@ -1897,6 +1899,73 @@ static void pwm_set(ledc_channel_t channel, uint32_t duty)
 {
     ledc_set_duty(LEDC_LOW_SPEED_MODE, channel, duty);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, channel);
+}
+
+
+static uint32_t vehicle_light_duty(float level)
+{
+    if (level < 0.0f) level = 0.0f;
+    if (level > 1.0f) level = 1.0f;
+
+    return (uint32_t)lroundf(
+        level * (float)MOTOR_PWM_MAX
+    );
+}
+
+
+static void vehicle_lights_off(void)
+{
+    pwm_set(PWM_HEADLIGHTS, 0);
+    pwm_set(PWM_TAIL_LIGHTS, 0);
+    gpio_set_level(REVERSE_LIGHT_GPIO, 0);
+}
+
+
+static void vehicle_lights_update(int16_t left,
+                                  int16_t right,
+                                  bool linked)
+{
+    if (!linked) {
+        vehicle_lights_off();
+        return;
+    }
+
+    bool moving =
+        left != 0 || right != 0;
+
+    int32_t translation =
+        (int32_t)left + (int32_t)right;
+
+    bool forward =
+        translation > 0;
+
+    bool reverse =
+        translation < 0;
+
+    float head_level =
+        forward
+            ? VEHICLE_LIGHT_BRIGHT_LEVEL
+            : VEHICLE_LIGHT_DIM_LEVEL;
+
+    float tail_level =
+        moving
+            ? VEHICLE_LIGHT_BRIGHT_LEVEL
+            : VEHICLE_LIGHT_DIM_LEVEL;
+
+    pwm_set(
+        PWM_HEADLIGHTS,
+        vehicle_light_duty(head_level)
+    );
+
+    pwm_set(
+        PWM_TAIL_LIGHTS,
+        vehicle_light_duty(tail_level)
+    );
+
+    gpio_set_level(
+        REVERSE_LIGHT_GPIO,
+        reverse ? 1 : 0
+    );
 }
 
 
@@ -1922,6 +1991,7 @@ static void motors_stop(void)
 
 static uint32_t motor_duty_from_demand(int16_t demand,
                                        bool pivot_mode,
+                                       bool stupid_mode,
                                        motor_state_t *state)
 {
     int direction =
@@ -1939,19 +2009,35 @@ static uint32_t motor_duty_from_demand(int16_t demand,
 
     int64_t now = esp_timer_get_time();
 
+    float command =
+        (float)abs(demand) / 1000.0f;
+
+    if (command > 1.0f) {
+        command = 1.0f;
+    }
+
+    /*
+     * STUPID mode is intentionally raw bang-bang PWM. Bypass the
+     * normal run-floor map, start boost and low-speed chopper so a
+     * transmitted 0.70 means ~70% electrical PWM at the bridge.
+     */
+    if (stupid_mode) {
+        state->direction = direction;
+        state->boost_until_us = 0;
+        state->chopper_active = false;
+        state->chopper_epoch_us = 0;
+
+        return (uint32_t)lroundf(
+            command * (float)MOTOR_PWM_MAX
+        );
+    }
+
     if (state->direction != direction) {
         state->direction = direction;
         state->boost_until_us =
             now + (int64_t)MOTOR_START_BOOST_MS * 1000LL;
         state->chopper_active = false;
         state->chopper_epoch_us = now;
-    }
-
-    float command =
-        (float)abs(demand) / 1000.0f;
-
-    if (command > 1.0f) {
-        command = 1.0f;
     }
 
     float chopper_command =
@@ -2033,6 +2119,7 @@ static void set_one_motor(int16_t demand,
                           ledc_channel_t reverse,
                           bool invert,
                           bool pivot_mode,
+                          bool stupid_mode,
                           motor_state_t *state)
 {
     if (invert) {
@@ -2043,7 +2130,12 @@ static void set_one_motor(int16_t demand,
     if (demand < -1000) demand = -1000;
 
     uint32_t duty =
-        motor_duty_from_demand(demand, pivot_mode, state);
+        motor_duty_from_demand(
+            demand,
+            pivot_mode,
+            stupid_mode,
+            state
+        );
 
     int pwm_permille =
         (int)lroundf(
@@ -2076,7 +2168,8 @@ static void set_one_motor(int16_t demand,
 
 static void set_motors(int16_t left,
                        int16_t right,
-                       bool pivot_mode)
+                       bool pivot_mode,
+                       bool stupid_mode)
 {
     set_one_motor(
         left,
@@ -2084,6 +2177,7 @@ static void set_motors(int16_t left,
         PWM_L_REV,
         LEFT_INVERT,
         pivot_mode,
+        stupid_mode,
         &left_motor_state
     );
 
@@ -2093,6 +2187,7 @@ static void set_motors(int16_t left,
         PWM_R_REV,
         RIGHT_INVERT,
         pivot_mode,
+        stupid_mode,
         &right_motor_state
     );
 }
@@ -2329,6 +2424,7 @@ static void motor_task(void *arg)
     int16_t current_left = 0;
     int16_t current_right = 0;
     bool current_pivot_mode = false;
+    bool current_stupid_mode = false;
 
     bool failsafe_active = true;
     static bool rx_failsafe_active = true;
@@ -2345,6 +2441,9 @@ static void motor_task(void *arg)
             current_pivot_mode =
                 (packet.flags & RC_CONTROL_FLAG_PIVOT) != 0;
 
+            current_stupid_mode =
+                (packet.flags & RC_CONTROL_FLAG_STUPID) != 0;
+
             failsafe_active = false;
 
             if (rx_failsafe_active) {
@@ -2357,6 +2456,7 @@ static void motor_task(void *arg)
 
         if (rx_shutdown_pending) {
             motors_stop();
+            vehicle_lights_off();
             failsafe_active = true;
             continue;
         }
@@ -2378,6 +2478,7 @@ static void motor_task(void *arg)
             }
 
             motors_stop();
+            vehicle_lights_off();
             failsafe_active = true;
             continue;
         }
@@ -2391,7 +2492,14 @@ static void motor_task(void *arg)
             set_motors(
                 current_left,
                 current_right,
-                current_pivot_mode
+                current_pivot_mode,
+                current_stupid_mode
+            );
+
+            vehicle_lights_update(
+                current_left,
+                current_right,
+                true
             );
         }
     }
