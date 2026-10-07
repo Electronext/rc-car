@@ -1873,7 +1873,7 @@ static void rx_low_battery_warning_and_sleep(int battery_mv,
 
 /*
  * LEDC channels 0..3 drive the four SA8302 inputs.
- * Channels 4..5 provide dimmable head/tail lighting.
+ * Channels 4..5 provide dimmable head/reverse lighting.
  */
 enum {
     PWM_L_FWD = LEDC_CHANNEL_0,
@@ -1881,7 +1881,7 @@ enum {
     PWM_R_FWD = LEDC_CHANNEL_2,
     PWM_R_REV = LEDC_CHANNEL_3,
     PWM_HEADLIGHTS = LEDC_CHANNEL_4,
-    PWM_TAIL_LIGHTS = LEDC_CHANNEL_5
+    PWM_REVERSE_LIGHT = LEDC_CHANNEL_5
 };
 
 typedef struct {
@@ -1917,8 +1917,8 @@ static uint32_t vehicle_light_duty(float level)
 static void vehicle_lights_off(void)
 {
     pwm_set(PWM_HEADLIGHTS, 0);
-    pwm_set(PWM_TAIL_LIGHTS, 0);
-    gpio_set_level(REVERSE_LIGHT_GPIO, 0);
+    pwm_set(PWM_REVERSE_LIGHT, 0);
+    gpio_set_level(TAIL_LIGHT_GPIO, 0);
 }
 
 
@@ -1937,9 +1937,6 @@ static void vehicle_lights_update(int16_t left,
         return;
     }
 
-    bool moving =
-        left != 0 || right != 0;
-
     int32_t translation =
         (int32_t)left + (int32_t)right;
 
@@ -1954,24 +1951,21 @@ static void vehicle_lights_update(int16_t left,
             ? VEHICLE_LIGHT_BRIGHT_LEVEL
             : VEHICLE_LIGHT_DIM_LEVEL;
 
-    float tail_level =
-        moving
-            ? VEHICLE_LIGHT_BRIGHT_LEVEL
-            : VEHICLE_LIGHT_DIM_LEVEL;
-
     pwm_set(
         PWM_HEADLIGHTS,
         vehicle_light_duty(head_level)
     );
 
-    pwm_set(
-        PWM_TAIL_LIGHTS,
-        vehicle_light_duty(tail_level)
+    gpio_set_level(
+        TAIL_LIGHT_GPIO,
+        1
     );
 
-    gpio_set_level(
-        REVERSE_LIGHT_GPIO,
-        reverse ? 1 : 0
+    pwm_set(
+        PWM_REVERSE_LIGHT,
+        reverse
+            ? vehicle_light_duty(VEHICLE_LIGHT_BRIGHT_LEVEL)
+            : 0
     );
 }
 
@@ -2822,8 +2816,8 @@ static void receiver_init(void)
     );
 
     pwm_channel_init(
-        PWM_TAIL_LIGHTS,
-        TAIL_LIGHT_GPIO
+        PWM_REVERSE_LIGHT,
+        REVERSE_LIGHT_GPIO
     );
 
     motors_stop();
