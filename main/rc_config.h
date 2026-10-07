@@ -59,8 +59,8 @@
 #define CURVATURE_POT_ADC_MIN            4
 #define CURVATURE_POT_ADC_MAX         3385
 #define CURVATURE_POT_INVERT             0
-#define CURVATURE_EXPONENT_MIN         1.00f
-#define CURVATURE_EXPONENT_MAX         5.00f
+#define CURVATURE_EXPONENT_MIN         5.00f
+#define CURVATURE_EXPONENT_MAX        20.00f
 
 // Three-way switch selects exact expo for both steering and throttle.
 // Motor speed ceiling is fixed at 100% during this calibration.
