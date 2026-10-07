@@ -94,9 +94,9 @@
 // Forward decreases the raw angle; reverse increases it.
 // Full-output points are set slightly inside the measured hard stops.
 #define THROTTLE_RAW_FORWARD          12765
-#define THROTTLE_NEUTRAL_LOW          13930
+#define THROTTLE_NEUTRAL_LOW          13920
 #define THROTTLE_CENTER_RAW           13975
-#define THROTTLE_NEUTRAL_HIGH         14020
+#define THROTTLE_NEUTRAL_HIGH         14030
 #define THROTTLE_RAW_REVERSE          15165
 
 // Preserve identical counts-per-unit sensitivity in both directions.
@@ -192,8 +192,8 @@
 #define MOTOR_PWM_FREQ_HZ       1000
 #define MOTOR_PWM_BITS          10
 #define MOTOR_PWM_MAX           ((1 << MOTOR_PWM_BITS) - 1)
-#define MOTOR_PWM_START_MIN     0.20f
-#define MOTOR_PWM_RUN_MIN       0.15f
+#define MOTOR_PWM_START_MIN     0.25f
+#define MOTOR_PWM_RUN_MIN       0.20f
 #define MOTOR_START_BOOST_MS    100
 
 // Set these after confirming physical direction.
