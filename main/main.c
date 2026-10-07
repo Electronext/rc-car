@@ -976,8 +976,8 @@ static void transmitter_task(void *arg)
         float throttle = 0.0f;
         float left = 0.0f;
         float right = 0.0f;
-        float curvature_shape =
-            curvature_shape_from_raw(curvature_raw);
+        float curvature_exponent =
+            curvature_exponent_from_raw(curvature_raw);
         float expo = expo_from_mode(mode_position);
         float speed = CALIBRATION_SPEED_LIMIT;
 
@@ -1050,7 +1050,7 @@ static void transmitter_task(void *arg)
                 arc_drive_mix(
                     steering,
                     velocity,
-                    curvature_shape,
+                    curvature_exponent,
                     &curvature,
                     &drive_left,
                     &drive_right
@@ -1135,7 +1135,7 @@ static void transmitter_task(void *arg)
 
         int64_t now = esp_timer_get_time();
 
-        bool curvature_shape_changed =
+        bool curvature_curve_changed =
             abs(curvature_raw - activity_curvature_raw) >=
                 TX_WAKE_CURVATURE_COUNTS;
 
@@ -1144,12 +1144,12 @@ static void transmitter_task(void *arg)
 
         if (steering != 0.0f ||
             throttle != 0.0f ||
-            curvature_shape_changed ||
+            curvature_curve_changed ||
             mode_changed) {
 
             last_activity_us = now;
 
-            if (curvature_shape_changed) {
+            if (curvature_curve_changed) {
                 activity_curvature_raw = curvature_raw;
             }
 
@@ -1230,7 +1230,7 @@ static void transmitter_task(void *arg)
 
             ESP_LOGI(
                 TAG,
-                "steer=%+.3f k=%+.3f a=%.3f throttle=%+.3f expo=%.2f speed=%.2f | "
+                "steer=%+.3f k=%+.3f g=%.3f throttle=%+.3f expo=%.2f speed=%.2f | "
                 "L=%+.3f R=%+.3f | mode=%d mix=%s%s | "
                 "link=%s hbSeq=%u age=%lldms hbRSSI=%s%d ctrlRSSI=%d "
                 "rxPWM=%+.3f/%+.3f rxVBAT=%.3fV fs=%lu skips=%lu gapMax=%lums | "
@@ -1238,7 +1238,7 @@ static void transmitter_task(void *arg)
                 "cb=%lu/%lums >40/100/250=%lu/%lu/%lu",
                 steering,
                 curvature,
-                curvature_shape,
+                curvature_exponent,
                 throttle,
                 expo,
                 speed,
