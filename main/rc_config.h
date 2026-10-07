@@ -6,8 +6,11 @@
 // ESP-NOW
 #define RC_WIFI_CHANNEL         1
 #define RC_MAGIC                0x52434331UL   // "RCC1"
-#define RC_TX_PERIOD_MS         20             // 50 Hz
-#define RC_FAILSAFE_MS          100
+#define RC_TX_PERIOD_MS         40             // 25 Hz
+#define RC_FAILSAFE_MS          160            // four nominal control periods
+#define RC_ACK_PERIOD_MS        100            // 10 Hz RX application heartbeat
+#define RC_MAC_LINK_TIMEOUT_MS  250
+#define RC_APP_LINK_TIMEOUT_MS  500
 
 // Fixed STA MACs for the two ESP32-C3 boards.
 #define RC_TX_MAC_INIT          {0x88, 0x56, 0xA6, 0x58, 0x57, 0xF8}
@@ -128,7 +131,9 @@
 
 // Link indication: solid battery colour while RX heartbeat is current;
 // blink 300 ms on / 700 ms off while disconnected.
-#define RC_LINK_TIMEOUT_MS             500
+// Overall link indication requires both recent TX->RX MAC delivery and
+// a recent RX->TX application heartbeat.
+#define RC_LINK_TIMEOUT_MS             RC_APP_LINK_TIMEOUT_MS
 #define STATUS_LED_ON_MS               300
 #define STATUS_LED_OFF_MS              700
 #define STATUS_LED_BRIGHTNESS           48
