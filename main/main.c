@@ -1720,6 +1720,8 @@ enum {
 typedef struct {
     int8_t direction;
     int64_t boost_until_us;
+    bool chopper_active;
+    int64_t chopper_epoch_us;
     int16_t applied_pwm_permille;
 } motor_state_t;
 
@@ -1743,9 +1745,13 @@ static void motors_stop(void)
 
     left_motor_state.direction = 0;
     left_motor_state.boost_until_us = 0;
+    left_motor_state.chopper_active = false;
+    left_motor_state.chopper_epoch_us = 0;
     left_motor_state.applied_pwm_permille = 0;
     right_motor_state.direction = 0;
     right_motor_state.boost_until_us = 0;
+    right_motor_state.chopper_active = false;
+    right_motor_state.chopper_epoch_us = 0;
     right_motor_state.applied_pwm_permille = 0;
 }
 
@@ -1760,6 +1766,8 @@ static uint32_t motor_duty_from_demand(int16_t demand,
     if (direction == 0) {
         state->direction = 0;
         state->boost_until_us = 0;
+        state->chopper_active = false;
+        state->chopper_epoch_us = 0;
         state->applied_pwm_permille = 0;
         return 0;
     }
@@ -1770,6 +1778,8 @@ static uint32_t motor_duty_from_demand(int16_t demand,
         state->direction = direction;
         state->boost_until_us =
             now + (int64_t)MOTOR_START_BOOST_MS * 1000LL;
+        state->chopper_active = false;
+        state->chopper_epoch_us = now;
     }
 
     float command =
@@ -1779,20 +1789,35 @@ static uint32_t motor_duty_from_demand(int16_t demand,
         command = 1.0f;
     }
 
+    bool chopping =
+        command < MOTOR_CHOPPER_MAX_COMMAND;
+
+    float drive_command = command;
+
+    if (chopping) {
+        if (!state->chopper_active) {
+            state->chopper_active = true;
+            state->chopper_epoch_us = now;
+        }
+
+        drive_command = MOTOR_CHOPPER_MAX_COMMAND;
+    } else {
+        state->chopper_active = false;
+        state->chopper_epoch_us = 0;
+    }
+
     /*
-     * Compress the logical 0..1 demand into the motor's measured
-     * usable running range. Any non-zero logical demand therefore
-     * starts at MOTOR_PWM_RUN_MIN rather than wasting stick travel
-     * inside the electrical/mechanical dead zone.
+     * Convert logical wheel demand to the measured usable continuous
+     * PWM range. In chopper mode the ON pulse uses the threshold demand
+     * so each pulse is strong enough to sustain/restart the wheel.
      */
     float duty_fraction =
         MOTOR_PWM_RUN_MIN +
-        command * (1.0f - MOTOR_PWM_RUN_MIN);
+        drive_command * (1.0f - MOTOR_PWM_RUN_MIN);
 
     /*
      * Static friction is higher than running friction. Give a newly
-     * started or reversed motor a short minimum-start pulse, then
-     * allow it to settle as low as MOTOR_PWM_RUN_MIN.
+     * started or reversed motor a short minimum-start pulse.
      */
     if (now < state->boost_until_us &&
         duty_fraction < MOTOR_PWM_START_MIN) {
@@ -1804,11 +1829,33 @@ static uint32_t motor_duty_from_demand(int16_t demand,
         duty_fraction = 1.0f;
     }
 
+    if (chopping) {
+        int64_t period_us =
+            (int64_t)MOTOR_CHOPPER_PERIOD_MS * 1000LL;
+
+        float on_fraction =
+            command / MOTOR_CHOPPER_MAX_COMMAND;
+
+        if (on_fraction < 0.0f) on_fraction = 0.0f;
+        if (on_fraction > 1.0f) on_fraction = 1.0f;
+
+        int64_t on_us =
+            (int64_t)lroundf(
+                on_fraction * (float)period_us
+            );
+
+        int64_t phase_us =
+            (now - state->chopper_epoch_us) % period_us;
+
+        if (phase_us >= on_us) {
+            return 0;
+        }
+    }
+
     return (uint32_t)lroundf(
         duty_fraction * (float)MOTOR_PWM_MAX
     );
 }
-
 
 static void set_one_motor(int16_t demand,
                           ledc_channel_t forward,
@@ -2100,7 +2147,11 @@ static void rx_heartbeat_task(void *arg)
 
 static void motor_task(void *arg)
 {
+    (void)arg;
+
     rc_packet_t packet;
+    int16_t current_left = 0;
+    int16_t current_right = 0;
 
     bool failsafe_active = true;
     static bool rx_failsafe_active = true;
@@ -2110,45 +2161,58 @@ static void motor_task(void *arg)
         if (xQueueReceive(
                 packet_queue,
                 &packet,
-                pdMS_TO_TICKS(10))) {
+                pdMS_TO_TICKS(MOTOR_CONTROL_UPDATE_MS))) {
 
-            if (rx_shutdown_pending) {
-                motors_stop();
-                continue;
-            }
-
-            set_motors(packet.left, packet.right);
+            current_left = packet.left;
+            current_right = packet.right;
 
             failsafe_active = false;
+
             if (rx_failsafe_active) {
                 ESP_LOGI(TAG, "RX link active");
                 rx_failsafe_active = false;
             }
         }
 
-
         int64_t now = esp_timer_get_time();
 
+        if (rx_shutdown_pending) {
+            motors_stop();
+            failsafe_active = true;
+            continue;
+        }
+
         if (!failsafe_active &&
-            (now - last_packet_us) > ((int64_t)RC_FAILSAFE_MS * 1000)) {
+            (now - last_packet_us) >
+                ((int64_t)RC_FAILSAFE_MS * 1000LL)) {
 
             if (!rx_failsafe_active) {
                 rx_failsafe_count++;
 
-                ESP_LOGW(TAG, "RX FAILSAFE - no packet for %d ms",
-                        RC_FAILSAFE_MS);
+                ESP_LOGW(
+                    TAG,
+                    "RX FAILSAFE - no packet for %d ms",
+                    RC_FAILSAFE_MS
+                );
+
                 rx_failsafe_active = true;
             }
 
             motors_stop();
-
             failsafe_active = true;
+            continue;
+        }
 
-            //ESP_LOGW(TAG, "FAILSAFE - motors stopped");
+        if (!failsafe_active) {
+            /*
+             * Refresh continuously, not only when a radio packet arrives.
+             * This allows low-speed chopper timing to run independently
+             * of the 25 Hz ESP-NOW control packet rate.
+             */
+            set_motors(current_left, current_right);
         }
     }
 }
-
 
 static void rx_status_task(void *arg)
 {
