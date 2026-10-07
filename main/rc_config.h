@@ -145,6 +145,11 @@
 #define RX_DIAG_BATTERY_SAMPLE_MS          50
 #define RX_DIAG_BATTERY_SAMPLE_COUNT        8
 
+// Persist compact link-health summaries only when anomalies occurred.
+// This avoids writing NVS on every packet or every brief RF glitch.
+#define RX_LINK_LOG_CAPACITY               32
+#define RX_LINK_DIAG_INTERVAL_MS          5000
+
 // Inactivity is based on user-control state, not packet traffic.
 // While asleep, wake briefly at this interval and sample controls
 // without starting Wi-Fi; stay asleep if nothing moved.
@@ -187,8 +192,8 @@
 #define MOTOR_R_REV_GPIO        7   // IND
 
 // Motor PWM. Logical demand is remapped over the usable motor range:
-// a stopped/reversing motor gets a short 20% start boost, then running
-// demand is scaled over 15%..100%.
+// a stopped/reversing motor gets a short 25% start boost, then running
+// demand is scaled over 20%..100%.
 #define MOTOR_PWM_FREQ_HZ       1000
 #define MOTOR_PWM_BITS          10
 #define MOTOR_PWM_MAX           ((1 << MOTOR_PWM_BITS) - 1)
