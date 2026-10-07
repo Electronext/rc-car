@@ -17,12 +17,6 @@
 #define RC_TX_MAC_INIT          {0x88, 0x56, 0xA6, 0x58, 0x57, 0xF8}
 #define RC_RX_MAC_INIT          {0x48, 0xCA, 0x43, 0xD4, 0x13, 0xB4}
 
-// Legacy analogue joystick pins.
-// These remain until the AS5048B path replaces the analogue
-// joystick handling after bring-up.
-#define JOY_X_GPIO              0
-#define JOY_Y_GPIO              1
-
 // Role-specific controls / indicators.
 #if RC_TRANSMITTER
 #define BATTERY_GPIO            0
@@ -114,13 +108,6 @@
 // corresponding physical endpoint. This keeps both directions at
 // exactly +/-1.0 at full travel even when the neutral deadband changes.
 
-// Temporary bench mode: read the two AS5048Bs only.
-// ESP-NOW transmitter control is not started while this is 1.
-#define AS5048B_SANITY_TEST     0
-
-// Expo pot is fitted.
-#define USE_SPEED_POT           1
-
 // Three-position ON-OFF-ON selector on GPIO4. Measured positions are
 // approximately 3 / 2219 / 4095 raw for LOW / CENTER / HIGH.
 // Thresholds intentionally leave very large guard bands.
@@ -174,9 +161,6 @@
 // ADC oneshot can transiently return ESP_ERR_TIMEOUT when the ADC
 // hardware is busy. Retry rather than treating that as a fatal error.
 #define ADC_READ_RETRY_COUNT                8
-
-// Joystick deadband as fraction of half travel.
-#define JOYSTICK_DEADBAND       0.05f
 
 // Speed selection is handled by the three-way switch; the pot now
 // controls expo only.
