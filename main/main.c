@@ -89,13 +89,48 @@ static void charge_status_init(void)
     };
 
     ESP_ERROR_CHECK(gpio_config(&cfg));
+
+#if !RC_TRANSMITTER
+    gpio_config_t vusb_cfg = {
+        .pin_bit_mask = 1ULL << VUSB_PRESENT_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&vusb_cfg));
+#endif
+}
+
+
+static bool external_power_present(void)
+{
+#if RC_TRANSMITTER
+    /*
+     * TX does not yet have a dedicated VUSB-present input. For now
+     * preserve the existing behaviour and treat active !CHG as
+     * external power.
+     */
+    return gpio_get_level(CHARGE_STATUS_GPIO) ==
+           CHARGE_STATUS_ACTIVE_LEVEL;
+#else
+    return gpio_get_level(VUSB_PRESENT_GPIO) ==
+           VUSB_PRESENT_ACTIVE_LEVEL;
+#endif
 }
 
 
 static bool is_charging(void)
 {
+#if RC_TRANSMITTER
     return gpio_get_level(CHARGE_STATUS_GPIO) ==
            CHARGE_STATUS_ACTIVE_LEVEL;
+#else
+    return external_power_present() &&
+           gpio_get_level(CHARGE_STATUS_GPIO) ==
+               CHARGE_STATUS_ACTIVE_LEVEL;
+#endif
 }
 
 
@@ -454,7 +489,7 @@ static float throttle_from_raw(uint16_t raw)
 }
 
 
-static float speed_scale_from_raw(int raw)
+static float expo_amount_from_raw(int raw)
 {
     float p =
         (float)(raw - SPEED_POT_ADC_MIN) /
@@ -467,7 +502,37 @@ static float speed_scale_from_raw(int raw)
     p = 1.0f - p;
 #endif
 
-    return SPEED_MIN + p * (1.0f - SPEED_MIN);
+    /*
+     * p follows the old speed-pot convention:
+     *   0 = full CCW / old minimum-speed end
+     *   1 = full CW  / old full-speed end
+     */
+    return CONTROL_EXPO_MAX * (1.0f - p);
+}
+
+
+static float apply_expo(float value, float expo)
+{
+    if (expo < 0.0f) expo = 0.0f;
+    if (expo > 1.0f) expo = 1.0f;
+
+    return
+        (1.0f - expo) * value +
+        expo * value * value * value;
+}
+
+
+static float speed_scale_from_mode(int mode_position)
+{
+    if (mode_position < 0) {
+        return SPEED_LEVEL_LOW;
+    }
+
+    if (mode_position > 0) {
+        return SPEED_LEVEL_HIGH;
+    }
+
+    return SPEED_LEVEL_MEDIUM;
 }
 
 
@@ -747,10 +812,19 @@ static void transmitter_task(void *arg)
         float throttle = 0.0f;
         float left = 0.0f;
         float right = 0.0f;
+        float expo = expo_amount_from_raw(speed_raw);
+        float speed = speed_scale_from_mode(mode_position);
 
         if (controls_valid) {
-            steering = steering_from_raw(steering_sample.angle);
-            throttle = throttle_from_raw(throttle_sample.angle);
+            steering = apply_expo(
+                steering_from_raw(steering_sample.angle),
+                expo
+            );
+
+            throttle = apply_expo(
+                throttle_from_raw(throttle_sample.angle),
+                expo
+            );
 
             skid_steer_mix(
                 steering,
@@ -760,8 +834,6 @@ static void transmitter_task(void *arg)
                 &right
             );
         }
-
-        float speed = speed_scale_from_raw(speed_raw);
 
         left *= speed;
         right *= speed;
@@ -797,7 +869,7 @@ static void transmitter_task(void *arg)
 
         int64_t now = esp_timer_get_time();
 
-        bool speed_changed =
+        bool expo_changed =
             abs(speed_raw - activity_speed_raw) >= TX_WAKE_SPEED_COUNTS;
 
         bool mode_changed =
@@ -805,12 +877,12 @@ static void transmitter_task(void *arg)
 
         if (steering != 0.0f ||
             throttle != 0.0f ||
-            speed_changed ||
+            expo_changed ||
             mode_changed) {
 
             last_activity_us = now;
 
-            if (speed_changed) {
+            if (expo_changed) {
                 activity_speed_raw = speed_raw;
             }
 
@@ -886,10 +958,11 @@ static void transmitter_task(void *arg)
 
             ESP_LOGI(
                 TAG,
-                "steer=%+.3f throttle=%+.3f speed=%.3f | "
+                "steer=%+.3f throttle=%+.3f expo=%.2f speed=%.2f | "
                 "L=%+.3f R=%+.3f | mode=%d frame=%s | link=%s ack=%u",
                 steering,
                 throttle,
+                expo,
                 speed,
                 left,
                 right,
@@ -1282,8 +1355,8 @@ static void rx_enter_sleep(uint8_t reason,
 
     ESP_ERROR_CHECK(
         esp_deep_sleep_enable_gpio_wakeup(
-            1ULL << CHARGE_STATUS_GPIO,
-            ESP_GPIO_WAKEUP_GPIO_LOW
+            1ULL << VUSB_PRESENT_GPIO,
+            ESP_GPIO_WAKEUP_GPIO_HIGH
         )
     );
 
@@ -1615,6 +1688,7 @@ static void rx_status_task(void *arg)
             battery_sampled = true;
         }
 
+        bool external_power = external_power_present();
         bool charging = is_charging();
 
         bool linked =
@@ -1634,13 +1708,13 @@ static void rx_status_task(void *arg)
         if (linked) {
             rx_poll_wake = false;
             disconnected_since_us = 0;
-        } else if (charging) {
+        } else if (external_power) {
             disconnected_since_us = 0;
         } else if (disconnected_since_us == 0) {
             disconnected_since_us = now;
         }
 
-        if (!charging &&
+        if (!external_power &&
             battery_mv < BATTERY_LOW_CUTOFF_MV) {
 
             rx_shutdown_pending = true;
@@ -1659,7 +1733,7 @@ static void rx_status_task(void *arg)
             now
         );
 
-        if (!charging && !linked) {
+        if (!external_power && !linked) {
             bool poll_window_expired =
                 rx_poll_wake &&
                 (now - rx_radio_start_us) >=
@@ -1725,6 +1799,7 @@ static void receiver_init(void)
     status_led_init();
 
     int battery_mv = rx_read_battery_mv();
+    bool external_power = external_power_present();
     bool charging = is_charging();
 
     esp_sleep_wakeup_cause_t wake_cause =
@@ -1743,7 +1818,7 @@ static void receiver_init(void)
     if (timer_wake &&
         rx_sleep_reason == RX_SLEEP_LOW_BATTERY) {
 
-        if (!charging &&
+        if (!external_power &&
             battery_mv < BATTERY_LOW_RECOVER_MV) {
 
             rx_low_battery_warning_and_sleep(
@@ -1751,7 +1826,7 @@ static void receiver_init(void)
                 false
             );
         }
-    } else if (!charging &&
+    } else if (!external_power &&
                battery_mv < BATTERY_LOW_CUTOFF_MV) {
 
         rx_low_battery_warning_and_sleep(
@@ -1767,7 +1842,7 @@ static void receiver_init(void)
     rx_poll_wake =
         timer_wake &&
         rx_sleep_reason == RX_SLEEP_DISCONNECTED &&
-        !charging;
+        !external_power;
 
     rx_rtc_magic = 0;
     rx_sleep_reason = RX_SLEEP_NONE;
