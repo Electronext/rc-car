@@ -104,10 +104,9 @@
 #define THROTTLE_NEUTRAL_HIGH         14121
 #define THROTTLE_RAW_REVERSE          15165
 
-// Preserve identical counts-per-unit sensitivity in both directions.
-// Measured forward usable travel is ~1175 counts; reverse is ~1155,
-// so reverse intentionally tops out slightly below 100%.
-#define THROTTLE_COUNTS_PER_UNIT      1175
+// Throttle normalization uses each calibrated neutral edge to its
+// corresponding physical endpoint. This keeps both directions at
+// exactly +/-1.0 at full travel even when the neutral deadband changes.
 
 // Temporary bench mode: read the two AS5048Bs only.
 // ESP-NOW transmitter control is not started while this is 1.
