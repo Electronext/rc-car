@@ -36,7 +36,7 @@ static const char *TAG = "RC";
 
 enum {
     RC_MSG_CONTROL = 1,
-    RC_MSG_ACK = 2
+    RC_MSG_HEARTBEAT = 2
 };
 
 typedef struct __attribute__((packed)) {
@@ -51,9 +51,17 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
-    uint16_t sequence;
+    uint16_t last_control_sequence;
     uint8_t type;
-} rc_ack_t;
+    uint16_t battery_mv;
+    int8_t control_rssi;
+    uint32_t failsafe_count;
+    uint8_t flags;      // bit 0 charging, bit 1 external power present
+} rc_heartbeat_t;
+
+static const uint8_t broadcast_mac[ESP_NOW_ETH_ALEN] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+};
 
 
 /* ============================================================
@@ -258,8 +266,10 @@ static const uint8_t tx_mac[ESP_NOW_ETH_ALEN] = RC_TX_MAC_INIT;
 static const uint8_t rx_mac[ESP_NOW_ETH_ALEN] = RC_RX_MAC_INIT;
 
 static volatile bool espnow_send_pending = false;
-static volatile int64_t last_ack_us = 0;
-static volatile uint16_t last_ack_sequence = 0;
+static volatile int64_t last_heartbeat_us = 0;
+static volatile uint16_t last_heartbeat_sequence = 0;
+static volatile uint16_t last_heartbeat_battery_mv = 0;
+static volatile uint32_t last_heartbeat_failsafe_count = 0;
 
 /* ESP-NOW link diagnostics (TX perspective). */
 static volatile uint32_t tx_mac_send_ok = 0;
@@ -273,9 +283,9 @@ static volatile uint32_t tx_send_max_latency_us = 0;
 static volatile uint32_t tx_send_latency_over_40ms = 0;
 static volatile uint32_t tx_send_latency_over_100ms = 0;
 static volatile uint32_t tx_send_latency_over_250ms = 0;
-static volatile uint32_t tx_ack_rx_count = 0;
-static volatile int tx_ack_rssi = 0;
-static volatile bool tx_ack_rssi_valid = false;
+static volatile uint32_t tx_heartbeat_rx_count = 0;
+static volatile int tx_heartbeat_rssi = 0;
+static volatile bool tx_heartbeat_rssi_valid = false;
 
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 static adc_cali_handle_t battery_cali_handle = NULL;
@@ -787,7 +797,7 @@ static void tx_recv_cb(const esp_now_recv_info_t *info,
                        const uint8_t *data,
                        int len)
 {
-    if (len != sizeof(rc_ack_t)) {
+    if (len != sizeof(rc_heartbeat_t)) {
         return;
     }
 
@@ -795,20 +805,23 @@ static void tx_recv_cb(const esp_now_recv_info_t *info,
         return;
     }
 
-    rc_ack_t ack;
-    memcpy(&ack, data, sizeof(ack));
+    rc_heartbeat_t heartbeat;
+    memcpy(&heartbeat, data, sizeof(heartbeat));
 
-    if (ack.magic != RC_MAGIC || ack.type != RC_MSG_ACK) {
+    if (heartbeat.magic != RC_MAGIC ||
+        heartbeat.type != RC_MSG_HEARTBEAT) {
         return;
     }
 
-    last_ack_sequence = ack.sequence;
-    last_ack_us = esp_timer_get_time();
-    tx_ack_rx_count++;
+    last_heartbeat_sequence = heartbeat.last_control_sequence;
+    last_heartbeat_battery_mv = heartbeat.battery_mv;
+    last_heartbeat_failsafe_count = heartbeat.failsafe_count;
+    last_heartbeat_us = esp_timer_get_time();
+    tx_heartbeat_rx_count++;
 
     if (info->rx_ctrl != NULL) {
-        tx_ack_rssi = info->rx_ctrl->rssi;
-        tx_ack_rssi_valid = true;
+        tx_heartbeat_rssi = info->rx_ctrl->rssi;
+        tx_heartbeat_rssi_valid = true;
     }
 }
 
@@ -830,21 +843,10 @@ static void status_task(void *arg)
 
         bool charging = is_charging();
 
-        bool rf_linked =
-            last_tx_mac_success_us != 0 &&
-            (now - last_tx_mac_success_us) <=
-                ((int64_t)RC_MAC_LINK_TIMEOUT_MS * 1000LL);
-
-#if RC_APP_ACK_ENABLED
-        bool app_linked =
-            last_ack_us != 0 &&
-            (now - last_ack_us) <=
-                ((int64_t)RC_APP_LINK_TIMEOUT_MS * 1000LL);
-#else
-        bool app_linked = true;
-#endif
-
-        bool linked = rf_linked && app_linked;
+        bool linked =
+            last_heartbeat_us != 0 &&
+            (now - last_heartbeat_us) <=
+                ((int64_t)RC_HEARTBEAT_TIMEOUT_MS * 1000LL);
 
         if (!charging &&
             battery_mv < BATTERY_LOW_CUTOFF_MV) {
@@ -961,7 +963,7 @@ static void transmitter_task(void *arg)
             espnow_send_pending = true;
 
             esp_err_t err = esp_now_send(
-                rx_mac,
+                broadcast_mac,
                 (uint8_t *)&packet,
                 sizeof(packet)
             );
@@ -1008,21 +1010,10 @@ static void transmitter_task(void *arg)
 
         bool charging = is_charging();
 
-        bool rf_linked =
-            last_tx_mac_success_us != 0 &&
-            (now - last_tx_mac_success_us) <=
-                ((int64_t)RC_MAC_LINK_TIMEOUT_MS * 1000LL);
-
-#if RC_APP_ACK_ENABLED
-        bool app_linked =
-            last_ack_us != 0 &&
-            (now - last_ack_us) <=
-                ((int64_t)RC_APP_LINK_TIMEOUT_MS * 1000LL);
-#else
-        bool app_linked = true;
-#endif
-
-        bool linked = rf_linked && app_linked;
+        bool linked =
+            last_heartbeat_us != 0 &&
+            (now - last_heartbeat_us) <=
+                ((int64_t)RC_HEARTBEAT_TIMEOUT_MS * 1000LL);
 
         if (charging || linked) {
             disconnected_since_us = 0;
@@ -1058,7 +1049,7 @@ static void transmitter_task(void *arg)
             packet.flags = 1;
 
             esp_now_send(
-                rx_mac,
+                broadcast_mac,
                 (uint8_t *)&packet,
                 sizeof(packet)
             );
@@ -1082,17 +1073,18 @@ static void transmitter_task(void *arg)
         if (++log_div >= 20) {
             log_div = 0;
 
-            int64_t ack_age_ms =
-                last_ack_us == 0
+            int64_t heartbeat_age_ms =
+                last_heartbeat_us == 0
                     ? -1
-                    : (now - last_ack_us) / 1000LL;
+                    : (now - last_heartbeat_us) / 1000LL;
 
             ESP_LOGI(
                 TAG,
                 "steer=%+.3f throttle=%+.3f expo=%.2f speed=%.2f | "
                 "L=%+.3f R=%+.3f | mode=%d frame=%s | "
-                "rf=%s app=%s ack=%u age=%lldms rssi=%s%d | "
-                "txMAC=%lu/%lu submitErr=%lu deferred=%lu ackRx=%lu | "
+                "link=%s hbSeq=%u age=%lldms hbRSSI=%s%d "
+                "rxVBAT=%.3fV fs=%lu | "
+                "tx=%lu/%lu submitErr=%lu deferred=%lu hbRx=%lu | "
                 "cb=%lu/%lums >40/100/250=%lu/%lu/%lu",
                 steering,
                 throttle,
@@ -1102,21 +1094,18 @@ static void transmitter_task(void *arg)
                 right,
                 mode_position,
                 steering_frame > 0 ? "FWD" : "REV",
-                rf_linked ? "OK" : "WAIT",
-#if RC_APP_ACK_ENABLED
-                app_linked ? "OK" : "WAIT",
-#else
-                "OFF",
-#endif
-                (unsigned)last_ack_sequence,
-                (long long)ack_age_ms,
-                tx_ack_rssi_valid ? "" : "?",
-                tx_ack_rssi_valid ? tx_ack_rssi : 0,
+                linked ? "OK" : "WAIT",
+                (unsigned)last_heartbeat_sequence,
+                (long long)heartbeat_age_ms,
+                tx_heartbeat_rssi_valid ? "" : "?",
+                tx_heartbeat_rssi_valid ? tx_heartbeat_rssi : 0,
+                last_heartbeat_battery_mv / 1000.0f,
+                (unsigned long)last_heartbeat_failsafe_count,
                 (unsigned long)tx_mac_send_ok,
                 (unsigned long)tx_mac_send_fail,
                 (unsigned long)tx_send_submit_err,
                 (unsigned long)tx_send_deferred,
-                (unsigned long)tx_ack_rx_count,
+                (unsigned long)tx_heartbeat_rx_count,
                 (unsigned long)(tx_send_last_latency_us / 1000U),
                 (unsigned long)(tx_send_max_latency_us / 1000U),
                 (unsigned long)tx_send_latency_over_40ms,
@@ -1286,18 +1275,16 @@ static void transmitter_init(void)
         esp_now_register_recv_cb(tx_recv_cb)
     );
 
-    add_espnow_peer(rx_mac);
+    add_espnow_peer(broadcast_mac);
 
     ESP_LOGI(
         TAG,
-        "Paired RX %02X:%02X:%02X:%02X:%02X:%02X",
+        "Broadcast controls on channel %d; expecting heartbeat from "
+        "%02X:%02X:%02X:%02X:%02X:%02X",
+        RC_WIFI_CHANNEL,
         rx_mac[0], rx_mac[1], rx_mac[2],
         rx_mac[3], rx_mac[4], rx_mac[5]
     );
-
-#if !RC_APP_ACK_ENABLED
-    ESP_LOGW(TAG, "Application ACK disabled: one-way ESP-NOW diagnostic mode");
-#endif
 
     xTaskCreate(
         transmitter_task,
@@ -1344,15 +1331,12 @@ static volatile uint32_t rx_failsafe_count = 0;
 static uint16_t rx_last_sequence = 0;
 static bool rx_sequence_valid = false;
 static uint32_t rx_sequence_skips = 0;
-static volatile uint32_t rx_ack_mac_ok = 0;
-static volatile uint32_t rx_ack_mac_fail = 0;
-static volatile uint32_t rx_ack_submit_err = 0;
-#if RC_APP_ACK_ENABLED
-static volatile bool rx_ack_send_pending = false;
-static volatile bool rx_ack_sequence_valid = false;
-static volatile uint16_t rx_ack_latest_sequence = 0;
-static TaskHandle_t rx_ack_task_handle = NULL;
-#endif
+static volatile uint32_t rx_heartbeat_send_ok = 0;
+static volatile uint32_t rx_heartbeat_send_fail = 0;
+static volatile uint32_t rx_heartbeat_submit_err = 0;
+static volatile bool rx_heartbeat_send_pending = false;
+static volatile int rx_latest_battery_mv = 0;
+static TaskHandle_t rx_heartbeat_task_handle = NULL;
 
 #define RX_RTC_MAGIC 0x52585231UL
 
@@ -1720,23 +1704,20 @@ static void set_motors(int16_t left, int16_t right)
 }
 
 
-#if RC_APP_ACK_ENABLED
-static void rx_send_cb(const wifi_tx_info_t *tx_info,
-                       esp_now_send_status_t status)
+static void rx_heartbeat_send_cb(const wifi_tx_info_t *tx_info,
+                                 esp_now_send_status_t status)
 {
     (void)tx_info;
 
     if (status == ESP_NOW_SEND_SUCCESS) {
-        rx_ack_mac_ok++;
+        rx_heartbeat_send_ok++;
     } else {
-        rx_ack_mac_fail++;
+        rx_heartbeat_send_fail++;
     }
 
-    rx_ack_send_pending = false;
+    rx_heartbeat_send_pending = false;
 }
 
-
-#endif
 
 static void recv_cb(const esp_now_recv_info_t *info,
                     const uint8_t *data,
@@ -1773,7 +1754,8 @@ static void recv_cb(const esp_now_recv_info_t *info,
     }
 
     if (rx_sequence_valid) {
-        uint16_t delta = (uint16_t)(packet.sequence - rx_last_sequence);
+        uint16_t delta =
+            (uint16_t)(packet.sequence - rx_last_sequence);
 
         if (delta > 1) {
             rx_sequence_skips += (uint32_t)(delta - 1U);
@@ -1782,11 +1764,6 @@ static void recv_cb(const esp_now_recv_info_t *info,
 
     rx_last_sequence = packet.sequence;
     rx_sequence_valid = true;
-
-#if RC_APP_ACK_ENABLED
-    rx_ack_latest_sequence = packet.sequence;
-    rx_ack_sequence_valid = true;
-#endif
 
     int64_t now = esp_timer_get_time();
     int64_t previous_packet_us = last_packet_us;
@@ -1802,17 +1779,9 @@ static void recv_cb(const esp_now_recv_info_t *info,
 
     last_packet_us = now;
 
-    /*
-     * Wake the ACK task from the received control packet rather than
-     * free-running an independent heartbeat timer. The ACK task rate
-     * limits itself to the configured average heartbeat period and
-     * deliberately transmits shortly after a control frame.
-     */
-#if RC_APP_ACK_ENABLED
-    if (rx_ack_task_handle != NULL) {
-        xTaskNotifyGive(rx_ack_task_handle);
+    if (rx_heartbeat_task_handle != NULL) {
+        xTaskNotifyGive(rx_heartbeat_task_handle);
     }
-#endif
 
     /*
      * Don't do motor peripheral work in the WiFi callback.
@@ -1829,7 +1798,7 @@ static void recv_cb(const esp_now_recv_info_t *info,
             TAG,
             "RX #%lu seq=%u rssi=%s%d skips=%lu | "
             "L=%+.3f R=%+.3f speed=%u | "
-            "ackMAC=%lu/%lu submitErr=%lu",
+            "hbTX=%lu/%lu submitErr=%lu",
             (unsigned long)rx_packet_count,
             packet.sequence,
             rx_control_rssi_valid ? "" : "?",
@@ -1838,16 +1807,15 @@ static void recv_cb(const esp_now_recv_info_t *info,
             packet.left / 1000.0f,
             packet.right / 1000.0f,
             packet.speed,
-            (unsigned long)rx_ack_mac_ok,
-            (unsigned long)rx_ack_mac_fail,
-            (unsigned long)rx_ack_submit_err
+            (unsigned long)rx_heartbeat_send_ok,
+            (unsigned long)rx_heartbeat_send_fail,
+            (unsigned long)rx_heartbeat_submit_err
         );
     }
 }
 
 
-#if RC_APP_ACK_ENABLED
-static void rx_ack_task(void *arg)
+static void rx_heartbeat_task(void *arg)
 {
     (void)arg;
 
@@ -1855,13 +1823,13 @@ static void rx_ack_task(void *arg)
 
     while (1) {
         /*
-         * A control packet notification is the timing reference.
-         * This avoids a free-running RX transmitter that can remain
-         * phase-locked against the 25 Hz TX control cadence.
+         * Control packets provide the timing reference. Sending the
+         * heartbeat shortly afterward keeps the two broadcast streams
+         * separated in time without relying on link-layer retries.
          */
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        if (!rx_ack_sequence_valid || rx_shutdown_pending) {
+        if (!rx_sequence_valid || rx_shutdown_pending) {
             continue;
         }
 
@@ -1875,12 +1843,12 @@ static void rx_ack_task(void *arg)
             continue;
         }
 
-        if (rx_ack_send_pending) {
+        if (rx_heartbeat_send_pending) {
             continue;
         }
 
         TickType_t delay_ticks =
-            pdMS_TO_TICKS(RC_ACK_DELAY_MS);
+            pdMS_TO_TICKS(RC_HEARTBEAT_DELAY_MS);
 
         if (delay_ticks < 1) {
             delay_ticks = 1;
@@ -1888,52 +1856,56 @@ static void rx_ack_task(void *arg)
 
         vTaskDelay(delay_ticks);
 
-        if (rx_shutdown_pending || rx_ack_send_pending) {
+        if (rx_shutdown_pending || rx_heartbeat_send_pending) {
             continue;
         }
 
-        rc_ack_t ack = {
+        rc_heartbeat_t heartbeat = {
             .magic = RC_MAGIC,
-            .sequence = rx_ack_latest_sequence,
-            .type = RC_MSG_ACK
+            .last_control_sequence = rx_last_sequence,
+            .type = RC_MSG_HEARTBEAT,
+            .battery_mv =
+                (uint16_t)(rx_latest_battery_mv < 0
+                    ? 0
+                    : rx_latest_battery_mv),
+            .control_rssi =
+                (int8_t)(rx_control_rssi_valid
+                    ? rx_control_rssi
+                    : 0),
+            .failsafe_count = rx_failsafe_count,
+            .flags =
+                (is_charging() ? 0x01U : 0U) |
+                (external_power_present() ? 0x02U : 0U)
         };
 
-        rx_ack_send_pending = true;
+        rx_heartbeat_send_pending = true;
 
-        esp_err_t ack_err = esp_now_send(
-            tx_mac,
-            (uint8_t *)&ack,
-            sizeof(ack)
+        esp_err_t err = esp_now_send(
+            broadcast_mac,
+            (uint8_t *)&heartbeat,
+            sizeof(heartbeat)
         );
 
-        if (ack_err != ESP_OK) {
-            rx_ack_send_pending = false;
-            rx_ack_submit_err++;
+        if (err != ESP_OK) {
+            rx_heartbeat_send_pending = false;
+            rx_heartbeat_submit_err++;
 
             ESP_LOGW(
                 TAG,
-                "ACK heartbeat send failed: %s",
-                esp_err_to_name(ack_err)
+                "Heartbeat broadcast failed: %s",
+                esp_err_to_name(err)
             );
 
             continue;
         }
 
-        /*
-         * Advance the ideal 10 Hz phase rather than setting the next
-         * deadline relative to this packet. At 25 Hz this naturally
-         * alternates packet opportunities around 80/120 ms, retaining
-         * a 100 ms average heartbeat period.
-         */
         do {
             next_due_us +=
-                (int64_t)RC_ACK_PERIOD_MS * 1000LL;
+                (int64_t)RC_HEARTBEAT_PERIOD_MS * 1000LL;
         } while (next_due_us <= packet_us);
     }
 }
 
-
-#endif
 
 static void motor_task(void *arg)
 {
@@ -1999,8 +1971,8 @@ static void rx_status_task(void *arg)
 
     uint32_t last_sequence_skips = rx_sequence_skips;
     uint32_t last_failsafe_count = rx_failsafe_count;
-    uint32_t last_ack_mac_fail = rx_ack_mac_fail;
-    uint32_t last_ack_submit_err = rx_ack_submit_err;
+    uint32_t last_heartbeat_send_fail = rx_heartbeat_send_fail;
+    uint32_t last_heartbeat_submit_err = rx_heartbeat_submit_err;
 
     while (1) {
         now = esp_timer_get_time();
@@ -2016,6 +1988,7 @@ static void rx_status_task(void *arg)
                 );
 
             last_battery_read_us = now;
+            rx_latest_battery_mv = battery_mv;
             battery_sampled = true;
         }
 
@@ -2041,17 +2014,17 @@ static void rx_status_task(void *arg)
 
             uint32_t sequence_skips = rx_sequence_skips;
             uint32_t failsafe_count = rx_failsafe_count;
-            uint32_t ack_mac_fail = rx_ack_mac_fail;
-            uint32_t ack_submit_err = rx_ack_submit_err;
+            uint32_t heartbeat_send_fail = rx_heartbeat_send_fail;
+            uint32_t heartbeat_submit_err = rx_heartbeat_submit_err;
 
             uint32_t sequence_skips_delta =
                 sequence_skips - last_sequence_skips;
             uint32_t failsafe_delta =
                 failsafe_count - last_failsafe_count;
-            uint32_t ack_mac_fail_delta =
-                ack_mac_fail - last_ack_mac_fail;
-            uint32_t ack_submit_err_delta =
-                ack_submit_err - last_ack_submit_err;
+            uint32_t heartbeat_send_fail_delta =
+                heartbeat_send_fail - last_heartbeat_send_fail;
+            uint32_t heartbeat_submit_err_delta =
+                heartbeat_submit_err - last_heartbeat_submit_err;
 
             uint32_t max_gap_ms = rx_max_packet_gap_ms;
 
@@ -2067,8 +2040,8 @@ static void rx_status_task(void *arg)
             bool anomaly =
                 sequence_skips_delta != 0 ||
                 failsafe_delta != 0 ||
-                ack_mac_fail_delta != 0 ||
-                ack_submit_err_delta != 0;
+                heartbeat_send_fail_delta != 0 ||
+                heartbeat_submit_err_delta != 0;
 
             if (anomaly) {
                 reset_diag_record_link_summary(
@@ -2084,18 +2057,18 @@ static void rx_status_task(void *arg)
                     sequence_skips_delta,
                     failsafe_count,
                     failsafe_delta,
-                    rx_ack_mac_ok,
-                    ack_mac_fail,
-                    ack_mac_fail_delta,
-                    ack_submit_err,
-                    ack_submit_err_delta
+                    rx_heartbeat_send_ok,
+                    heartbeat_send_fail,
+                    heartbeat_send_fail_delta,
+                    heartbeat_submit_err,
+                    heartbeat_submit_err_delta
                 );
             }
 
             last_sequence_skips = sequence_skips;
             last_failsafe_count = failsafe_count;
-            last_ack_mac_fail = ack_mac_fail;
-            last_ack_submit_err = ack_submit_err;
+            last_heartbeat_send_fail = heartbeat_send_fail;
+            last_heartbeat_submit_err = heartbeat_submit_err;
 
             rx_max_packet_gap_ms = 0;
 
@@ -2204,6 +2177,7 @@ static void receiver_init(void)
     status_led_init();
 
     int battery_mv = rx_read_battery_mv();
+    rx_latest_battery_mv = battery_mv;
     bool external_power = external_power_present();
     bool charging = is_charging();
 
@@ -2321,17 +2295,15 @@ static void receiver_init(void)
 
     ESP_ERROR_CHECK(esp_now_init());
 
-#if RC_APP_ACK_ENABLED
     ESP_ERROR_CHECK(
-        esp_now_register_send_cb(rx_send_cb)
+        esp_now_register_send_cb(rx_heartbeat_send_cb)
     );
-#endif
 
     esp_now_peer_info_t peer = {0};
 
     memcpy(
         peer.peer_addr,
-        tx_mac,
+        broadcast_mac,
         ESP_NOW_ETH_ALEN
     );
 
@@ -2349,14 +2321,13 @@ static void receiver_init(void)
 
     ESP_LOGI(
         TAG,
-        "Paired TX %02X:%02X:%02X:%02X:%02X:%02X",
+        "Listening for TX %02X:%02X:%02X:%02X:%02X:%02X "
+        "and broadcasting %d Hz heartbeat on channel %d",
         tx_mac[0], tx_mac[1], tx_mac[2],
-        tx_mac[3], tx_mac[4], tx_mac[5]
+        tx_mac[3], tx_mac[4], tx_mac[5],
+        1000 / RC_HEARTBEAT_PERIOD_MS,
+        RC_WIFI_CHANNEL
     );
-
-#if !RC_APP_ACK_ENABLED
-    ESP_LOGW(TAG, "Application ACK disabled: RX radio-silent diagnostic mode");
-#endif
 
     rx_radio_start_us = esp_timer_get_time();
 
@@ -2368,16 +2339,14 @@ static void receiver_init(void)
         );
     }
 
-#if RC_APP_ACK_ENABLED
     xTaskCreate(
-        rx_ack_task,
-        "rx_ack",
+        rx_heartbeat_task,
+        "rx_heartbeat",
         3072,
         NULL,
         5,
-        &rx_ack_task_handle
+        &rx_heartbeat_task_handle
     );
-#endif
 
     xTaskCreate(
         motor_task,
