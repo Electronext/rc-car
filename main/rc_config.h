@@ -97,9 +97,9 @@
 // Forward decreases the raw angle; reverse increases it.
 // Full-output points are set slightly inside the measured hard stops.
 #define THROTTLE_RAW_FORWARD          12765
-#define THROTTLE_NEUTRAL_LOW          13920
+#define THROTTLE_NEUTRAL_LOW          13829
 #define THROTTLE_CENTER_RAW           13975
-#define THROTTLE_NEUTRAL_HIGH         14030
+#define THROTTLE_NEUTRAL_HIGH         14121
 #define THROTTLE_RAW_REVERSE          15165
 
 // Preserve identical counts-per-unit sensitivity in both directions.
