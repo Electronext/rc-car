@@ -22,7 +22,7 @@
   "idf.openOcdConfigs": [
     "board/esp32c3-builtin.cfg"
   ],
-  "idf.portWin": "COM3",
+  "idf.portWin": "COM10",
   "idf.currentSetup": "c:\\Espressif\\v5.5.2\\esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32c3"

@@ -1,7 +1,7 @@
 #pragma once
 
 // Change to 0 for the car/receiver.
-#define RC_TRANSMITTER          0
+#define RC_TRANSMITTER          1
 
 // ESP-NOW
 #define RC_WIFI_CHANNEL         6
