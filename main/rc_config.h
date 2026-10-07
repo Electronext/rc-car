@@ -20,9 +20,9 @@
 // Role-specific controls / indicators.
 #if RC_TRANSMITTER
 #define BATTERY_GPIO            0
-#define PIVOT_EXPO_POT_GPIO     1   // pivot expo calibration pot
+#define THROTTLE_EXPO_POT_GPIO  1   // throttle-only expo pot
 #define STATUS_LED_GPIO         3
-#define MODE_SWITCH_GPIO        4   // 3-way expo selector
+#define MODE_SWITCH_GPIO        4   // LOW / FULL / STUPID selector
 #define CHARGE_STATUS_GPIO      5
 #define CHARGE_STATUS_ENABLED   0   // !CHG not wired on TX yet
 #else
@@ -35,6 +35,9 @@
 #define CHARGE_STATUS_GPIO      4
 #define CHARGE_STATUS_ENABLED   1
 #define STATUS_LED_GPIO         8
+#define HEADLIGHT_GPIO          20
+#define TAIL_LIGHT_GPIO         21
+#define REVERSE_LIGHT_GPIO       6
 #endif
 
 // Charger status is active LOW (!CHG). On RX it is only meaningful
@@ -46,31 +49,29 @@
 #define BATTERY_DIVIDER_TOP_OHMS       100000
 #define BATTERY_DIVIDER_BOTTOM_OHMS    100000
 
-// Pivot-expo calibration pot:
-// 3.3V -> 330R -> 1k linear pot -> GND, wiper to PIVOT_EXPO_POT_GPIO.
-// Pivot uses an independent power-law steering curve:
-//
-//     pivot = sign(s_raw) * |s_raw|^p
-//
-// p=1 is linear; larger values give progressively stronger centre
-// softening. The deliberately wide 1..20 range is for calibration.
-#define PIVOT_EXPO_POT_SERIES_OHMS     330
-#define PIVOT_EXPO_POT_OHMS            1000
-#define PIVOT_EXPO_POT_ADC_MIN           4
-#define PIVOT_EXPO_POT_ADC_MAX        3385
-#define PIVOT_EXPO_POT_INVERT            0
-#define PIVOT_EXPO_EXPONENT_MIN        1.00f
-#define PIVOT_EXPO_EXPONENT_MAX       20.00f
+// Throttle-only expo pot:
+// 3.3V -> 330R -> 1k linear pot -> GND, wiper to THROTTLE_EXPO_POT_GPIO.
+// Expo is a linear/cubic blend: y=(1-e)x + e*x^3, with e in 0..1.
+// Steering no longer uses this variable expo.
+#define THROTTLE_EXPO_POT_SERIES_OHMS  330
+#define THROTTLE_EXPO_POT_OHMS         1000
+#define THROTTLE_EXPO_POT_ADC_MIN        4
+#define THROTTLE_EXPO_POT_ADC_MAX     3385
+#define THROTTLE_EXPO_POT_INVERT         0
+#define THROTTLE_EXPO_MAX              1.00f
 
-// Drive curvature is now fixed at the experimentally preferred value.
+// Final normal-drive steering calibration.
 #define DRIVE_CURVATURE_EXPONENT       2.20f
+#define PIVOT_EXPO_EXPONENT            3.00f
 
-// Three-way switch selects exact expo for normal drive steering and
-// throttle. Pivot steering has its own independent exponent above.
-#define EXPO_LEVEL_LOW                 0.00f
-#define EXPO_LEVEL_MEDIUM              0.50f
-#define EXPO_LEVEL_HIGH                1.00f
-#define CALIBRATION_SPEED_LIMIT        1.00f
+// Three-way selector: LOW / FULL / STUPID.
+#define DRIVE_SPEED_LOW                0.30f
+#define DRIVE_SPEED_FULL               1.00f
+
+// Deliberately crude bang-bang demonstration mode.
+#define STUPID_STEERING_THRESHOLD_DEG 45.00f
+#define STUPID_THROTTLE_THRESHOLD      0.50f
+#define STUPID_PWM_MIN                 0.70f
 
 // AS5048B magnetic joystick sensors.
 #define AS5048B_SDA_GPIO        6
@@ -93,8 +94,8 @@
 #define STEERING_DEADBAND_HIGH        5500
 #define STEERING_RAW_MAX              7800
 
-// Set to 1 later if the physical steering direction is reversed.
-#define STEERING_INVERT               0
+// New vehicle front is the former rear, so steering sense is reversed.
+#define STEERING_INVERT               1
 
 // Throttle calibration (AS5048B at 0x42).
 // Forward decreases the raw angle; reverse increases it.
@@ -131,7 +132,7 @@
 #define RC_LINK_TIMEOUT_MS             RC_HEARTBEAT_TIMEOUT_MS
 #define STATUS_LED_ON_MS               300
 #define STATUS_LED_OFF_MS              700
-#define STATUS_LED_BRIGHTNESS           48
+#define STATUS_LED_BRIGHTNESS          128
 #define STATUS_LED_SELF_TEST_MS         150
 #define CHARGE_BREATHE_PERIOD_MS       2000
 #define DISCONNECTED_SLEEP_MS        120000
@@ -157,14 +158,13 @@
 #define TX_SLEEP_POLL_MS               1000
 #define TX_WAKE_STEERING_COUNTS          80
 #define TX_WAKE_THROTTLE_COUNTS          80
-#define TX_WAKE_PIVOT_EXPO_COUNTS         20
+#define TX_WAKE_THROTTLE_EXPO_COUNTS      20
 
 // ADC oneshot can transiently return ESP_ERR_TIMEOUT when the ADC
 // hardware is busy. Retry rather than treating that as a fatal error.
 #define ADC_READ_RETRY_COUNT                8
 
-// Speed selection is handled by the three-way switch; the pot now
-// controls expo only.
+// Three-way selects LOW / FULL / STUPID; the pot controls throttle expo only.
 
 // Curvature steering.
 // In normal drive, steering sets wheel-speed ratio (therefore radius)
@@ -186,7 +186,7 @@
 
 // Motor PWM. Logical demand is remapped over the usable motor range:
 // a stopped/reversing motor gets a short 25% start boost, then running
-// demand is scaled over 20%..100%.
+// demand is scaled over 15%..100%.
 #define MOTOR_PWM_FREQ_HZ       1000
 #define MOTOR_PWM_BITS          10
 #define MOTOR_PWM_MAX           ((1 << MOTOR_PWM_BITS) - 1)
@@ -203,6 +203,11 @@
 #define MOTOR_CHOPPER_PERIOD_MS            100
 #define MOTOR_CONTROL_UPDATE_MS             10
 
-// Set these after confirming physical direction.
-#define LEFT_INVERT             0
-#define RIGHT_INVERT            0
+// New vehicle front is the former rear: reverse both motor directions.
+#define LEFT_INVERT             1
+#define RIGHT_INVERT            1
+
+// Vehicle lighting on RX. Head/tail use the two spare LEDC channels;
+// reverse is binary. Values are fractions of full PWM.
+#define VEHICLE_LIGHT_DIM_LEVEL       0.20f
+#define VEHICLE_LIGHT_BRIGHT_LEVEL    1.00f
