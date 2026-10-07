@@ -1347,10 +1347,12 @@ static uint32_t rx_sequence_skips = 0;
 static volatile uint32_t rx_ack_mac_ok = 0;
 static volatile uint32_t rx_ack_mac_fail = 0;
 static volatile uint32_t rx_ack_submit_err = 0;
+#if RC_APP_ACK_ENABLED
 static volatile bool rx_ack_send_pending = false;
 static volatile bool rx_ack_sequence_valid = false;
 static volatile uint16_t rx_ack_latest_sequence = 0;
 static TaskHandle_t rx_ack_task_handle = NULL;
+#endif
 
 #define RX_RTC_MAGIC 0x52585231UL
 
@@ -1718,6 +1720,7 @@ static void set_motors(int16_t left, int16_t right)
 }
 
 
+#if RC_APP_ACK_ENABLED
 static void rx_send_cb(const wifi_tx_info_t *tx_info,
                        esp_now_send_status_t status)
 {
@@ -1732,6 +1735,8 @@ static void rx_send_cb(const wifi_tx_info_t *tx_info,
     rx_ack_send_pending = false;
 }
 
+
+#endif
 
 static void recv_cb(const esp_now_recv_info_t *info,
                     const uint8_t *data,
@@ -1841,6 +1846,7 @@ static void recv_cb(const esp_now_recv_info_t *info,
 }
 
 
+#if RC_APP_ACK_ENABLED
 static void rx_ack_task(void *arg)
 {
     (void)arg;
@@ -1926,6 +1932,8 @@ static void rx_ack_task(void *arg)
     }
 }
 
+
+#endif
 
 static void motor_task(void *arg)
 {
