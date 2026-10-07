@@ -22,25 +22,29 @@
 // Role-specific controls / indicators.
 #if RC_TRANSMITTER
 #define BATTERY_GPIO            0
-#define SPEED_GPIO              1
+#define SPEED_GPIO              1   // speed pot now controls expo
 #define STATUS_LED_GPIO         3
-#define MODE_SWITCH_GPIO        4
+#define MODE_SWITCH_GPIO        4   // 3-way speed selector
 #define CHARGE_STATUS_GPIO      5
 #else
-#define BATTERY_GPIO            2
+#define BATTERY_GPIO            3
+#define VUSB_PRESENT_GPIO       1
 #define CHARGE_STATUS_GPIO      4
 #define STATUS_LED_GPIO         8
 #endif
 
-// Charger status is active LOW (!CHG).
+// Charger status is active LOW (!CHG). On RX it is only meaningful
+// while VUSB_PRESENT is HIGH.
 #define CHARGE_STATUS_ACTIVE_LEVEL      0
+#define VUSB_PRESENT_ACTIVE_LEVEL       1
 
 // Battery monitor divider: LiPo+ -> 100k -> ADC -> 100k -> GND.
 #define BATTERY_DIVIDER_TOP_OHMS       100000
 #define BATTERY_DIVIDER_BOTTOM_OHMS    100000
 
-// Speed pot wiring: 3.3V -> 330R -> 1k linear pot -> GND,
-// with the wiper connected to SPEED_GPIO.
+// Expo pot wiring: 3.3V -> 330R -> 1k linear pot -> GND,
+// with the wiper connected to SPEED_GPIO. The existing direction
+// convention is retained: full CCW = maximum expo, full CW = zero expo.
 #define SPEED_POT_SERIES_OHMS          330
 #define SPEED_POT_OHMS                 1000
 
@@ -48,6 +52,15 @@
 #define SPEED_POT_ADC_MIN               4
 #define SPEED_POT_ADC_MAX               3385
 #define SPEED_POT_INVERT                1
+
+// Maximum centre-softening at full CCW. Expo is a linear/cubic blend:
+// y = (1-e)*x + e*x^3. 0 = linear, 1 = pure cubic.
+#define CONTROL_EXPO_MAX               0.70f
+
+// Three-way switch speed ceilings: LOW / CENTER / HIGH.
+#define SPEED_LEVEL_LOW                0.50f
+#define SPEED_LEVEL_MEDIUM             0.75f
+#define SPEED_LEVEL_HIGH               1.00f
 
 // AS5048B magnetic joystick sensors.
 #define AS5048B_SDA_GPIO        6
@@ -77,9 +90,9 @@
 // Forward decreases the raw angle; reverse increases it.
 // Full-output points are set slightly inside the measured hard stops.
 #define THROTTLE_RAW_FORWARD          12765
-#define THROTTLE_NEUTRAL_LOW          13940
+#define THROTTLE_NEUTRAL_LOW          13930
 #define THROTTLE_CENTER_RAW           13975
-#define THROTTLE_NEUTRAL_HIGH         14010
+#define THROTTLE_NEUTRAL_HIGH         14020
 #define THROTTLE_RAW_REVERSE          15165
 
 // Preserve identical counts-per-unit sensitivity in both directions.
@@ -91,7 +104,7 @@
 // ESP-NOW transmitter control is not started while this is 1.
 #define AS5048B_SANITY_TEST     0
 
-// Speed pot is fitted.
+// Expo pot is fitted.
 #define USE_SPEED_POT           1
 
 // Three-position ON-OFF-ON selector on GPIO4. Measured positions are
@@ -144,10 +157,8 @@
 // Joystick deadband as fraction of half travel.
 #define JOYSTICK_DEADBAND       0.05f
 
-// Speed pot:
-// At minimum pot, full stick gives SPEED_MIN motor demand.
-// At maximum pot, full stick gives 100%.
-#define SPEED_MIN               0.50f
+// Speed selection is handled by the three-way switch; the pot now
+// controls expo only.
 
 // Throttle-dependent skid steering.
 // At zero throttle, full steering counter-rotates both motors at the
@@ -166,10 +177,10 @@
 // Fit external pulldowns (recommended 4.7k) from all four SA8302
 // logic inputs to GND so they stay deterministically LOW throughout
 // ROM/bootloader startup before application firmware takes control.
-#define MOTOR_L_FWD_GPIO        3   // INA
+#define MOTOR_L_FWD_GPIO       10   // INA
 #define MOTOR_L_REV_GPIO        5   // INB
 #define MOTOR_R_FWD_GPIO        0   // INC
-#define MOTOR_R_REV_GPIO        1   // IND
+#define MOTOR_R_REV_GPIO        7   // IND
 
 // Motor PWM. Logical demand is remapped over the usable motor range:
 // a stopped/reversing motor gets a short 20% start boost, then running
