@@ -1,10 +1,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 #include "esp_attr.h"
 #include "esp_err.h"
@@ -100,6 +102,11 @@ typedef struct {
 } reset_diag_rtc_snapshot_t;
 
 RTC_NOINIT_ATTR static reset_diag_rtc_snapshot_t rtc_snapshot;
+
+#define LINK_DIAG_QUEUE_DEPTH 4
+
+static QueueHandle_t link_diag_queue = NULL;
+static volatile uint32_t link_diag_queue_drops = 0;
 
 static const char *reset_reason_name(esp_reset_reason_t reason)
 {
@@ -346,9 +353,10 @@ static void dump_ring(void)
     }
 
     printf(
-        "RXDIAG: %u retained link anomaly summary record(s), capacity %u\n",
+        "RXDIAG: %u retained link anomaly summary record(s), capacity %u, queueDrops=%lu\n",
         (unsigned)link_ring.count,
-        (unsigned)RX_LINK_LOG_CAPACITY
+        (unsigned)RX_LINK_LOG_CAPACITY,
+        (unsigned long)link_diag_queue_drops
     );
 
     first =
@@ -534,6 +542,83 @@ void reset_diag_runtime_sample(int battery_mv,
     rtc_snapshot.charging = charging ? 1 : 0;
 }
 
+static void link_diag_writer_task(void *arg)
+{
+    (void)arg;
+
+    link_diag_record_t pending;
+
+    link_diag_ring_t *ring =
+        (link_diag_ring_t *)malloc(sizeof(*ring));
+
+    if (ring == NULL) {
+        ESP_LOGE(TAG, "Could not allocate retained link log buffer");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (1) {
+        if (xQueueReceive(
+                link_diag_queue,
+                &pending,
+                portMAX_DELAY) != pdTRUE) {
+
+            continue;
+        }
+
+        nvs_handle_t nvs;
+        esp_err_t err =
+            nvs_open("rxdiag", NVS_READWRITE, &nvs);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "link nvs_open failed: %s",
+                esp_err_to_name(err)
+            );
+            continue;
+        }
+
+        err = link_ring_load(nvs, ring);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "link ring load failed: %s",
+                esp_err_to_name(err)
+            );
+            nvs_close(nvs);
+            continue;
+        }
+
+        pending.sequence = ring->next_sequence++;
+
+        ring->records[ring->next] = pending;
+        ring->next =
+            (uint16_t)((ring->next + 1U) % RX_LINK_LOG_CAPACITY);
+
+        if (ring->count < RX_LINK_LOG_CAPACITY) {
+            ring->count++;
+        }
+
+        err = link_ring_save(nvs, ring);
+        nvs_close(nvs);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "link ring save failed: %s",
+                esp_err_to_name(err)
+            );
+            continue;
+        }
+
+        ESP_LOGW(TAG, "Retained RX link anomaly summary:");
+        print_link_record(&pending);
+    }
+}
+
+
 void reset_diag_record_link_summary(int battery_mv,
                                     int rssi_last,
                                     int rssi_min,
@@ -551,25 +636,13 @@ void reset_diag_record_link_summary(int battery_mv,
                                     uint32_t ack_submit_err,
                                     uint32_t ack_submit_err_delta)
 {
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("rxdiag", NVS_READWRITE, &nvs);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "link nvs_open failed: %s", esp_err_to_name(err));
-        return;
-    }
-
-    link_diag_ring_t ring;
-    err = link_ring_load(nvs, &ring);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "link ring load failed: %s", esp_err_to_name(err));
-        nvs_close(nvs);
+    if (link_diag_queue == NULL) {
+        link_diag_queue_drops++;
         return;
     }
 
     link_diag_record_t r = {
-        .sequence = ring.next_sequence++,
+        .sequence = 0,
         .uptime_ms = (uint32_t)(esp_timer_get_time() / 1000LL),
         .battery_mv = (uint16_t)(battery_mv < 0 ? 0 : battery_mv),
         .rssi_last = (int8_t)rssi_last,
@@ -589,24 +662,9 @@ void reset_diag_record_link_summary(int battery_mv,
         .ack_submit_err_delta = ack_submit_err_delta
     };
 
-    ring.records[ring.next] = r;
-    ring.next =
-        (uint16_t)((ring.next + 1U) % RX_LINK_LOG_CAPACITY);
-
-    if (ring.count < RX_LINK_LOG_CAPACITY) {
-        ring.count++;
+    if (xQueueSend(link_diag_queue, &r, 0) != pdTRUE) {
+        link_diag_queue_drops++;
     }
-
-    err = link_ring_save(nvs, &ring);
-    nvs_close(nvs);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "link ring save failed: %s", esp_err_to_name(err));
-        return;
-    }
-
-    ESP_LOGW(TAG, "Retained RX link anomaly summary:");
-    print_link_record(&r);
 }
 
 
@@ -673,6 +731,34 @@ static void console_task(void *arg)
 
 void reset_diag_start_console_task(void)
 {
+    if (link_diag_queue == NULL) {
+        link_diag_queue =
+            xQueueCreate(
+                LINK_DIAG_QUEUE_DEPTH,
+                sizeof(link_diag_record_t)
+            );
+
+        if (link_diag_queue == NULL) {
+            ESP_LOGE(TAG, "Could not create link diagnostic queue");
+        } else {
+            BaseType_t created =
+                xTaskCreate(
+                    link_diag_writer_task,
+                    "rxdiag_writer",
+                    6144,
+                    NULL,
+                    2,
+                    NULL
+                );
+
+            if (created != pdPASS) {
+                ESP_LOGE(TAG, "Could not create link diagnostic writer");
+                vQueueDelete(link_diag_queue);
+                link_diag_queue = NULL;
+            }
+        }
+    }
+
     xTaskCreate(
         console_task,
         "rxdiag_console",
