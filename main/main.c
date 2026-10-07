@@ -536,6 +536,41 @@ static float speed_scale_from_mode(int mode_position)
 }
 
 
+static float apply_speed_limit(float value, float limit)
+{
+    if (value == 0.0f || limit <= 0.0f) {
+        return 0.0f;
+    }
+
+    if (limit >= 1.0f) {
+        return value;
+    }
+
+    float magnitude = fabsf(value);
+
+    if (magnitude > 1.0f) {
+        magnitude = 1.0f;
+    }
+
+    /*
+     * Soft top-end limiter:
+     *
+     *     y = L*x / (L + (1-L)*x)
+     *
+     * where x is command magnitude and L is the selected speed limit.
+     *
+     * This has unity slope at zero, so LOW/MEDIUM do not further
+     * soften initial motor take-up, while x=1 still maps exactly to L.
+     * It is monotonic for every 0 < L <= 1.
+     */
+    float limited =
+        (limit * magnitude) /
+        (limit + (1.0f - limit) * magnitude);
+
+    return value < 0.0f ? -limited : limited;
+}
+
+
 static int steering_frame_update(uint16_t throttle_raw,
                                  int current_frame)
 {
@@ -835,8 +870,8 @@ static void transmitter_task(void *arg)
             );
         }
 
-        left *= speed;
-        right *= speed;
+        left = apply_speed_limit(left, speed);
+        right = apply_speed_limit(right, speed);
 
         packet.sequence++;
         packet.left =
