@@ -56,6 +56,8 @@ typedef struct __attribute__((packed)) {
     uint16_t battery_mv;
     int8_t control_rssi;
     uint32_t failsafe_count;
+    uint32_t sequence_skips;
+    uint32_t max_control_gap_ms;
     uint8_t flags;      // bit 0 charging, bit 1 external power present
 } rc_heartbeat_t;
 
@@ -269,7 +271,10 @@ static volatile bool espnow_send_pending = false;
 static volatile int64_t last_heartbeat_us = 0;
 static volatile uint16_t last_heartbeat_sequence = 0;
 static volatile uint16_t last_heartbeat_battery_mv = 0;
+static volatile int last_heartbeat_control_rssi = 0;
 static volatile uint32_t last_heartbeat_failsafe_count = 0;
+static volatile uint32_t last_heartbeat_sequence_skips = 0;
+static volatile uint32_t last_heartbeat_max_control_gap_ms = 0;
 
 /* ESP-NOW link diagnostics (TX perspective). */
 static volatile uint32_t tx_mac_send_ok = 0;
@@ -815,7 +820,10 @@ static void tx_recv_cb(const esp_now_recv_info_t *info,
 
     last_heartbeat_sequence = heartbeat.last_control_sequence;
     last_heartbeat_battery_mv = heartbeat.battery_mv;
+    last_heartbeat_control_rssi = heartbeat.control_rssi;
     last_heartbeat_failsafe_count = heartbeat.failsafe_count;
+    last_heartbeat_sequence_skips = heartbeat.sequence_skips;
+    last_heartbeat_max_control_gap_ms = heartbeat.max_control_gap_ms;
     last_heartbeat_us = esp_timer_get_time();
     tx_heartbeat_rx_count++;
 
@@ -922,18 +930,24 @@ static void transmitter_task(void *arg)
         float throttle = 0.0f;
         float left = 0.0f;
         float right = 0.0f;
-        float expo = expo_amount_from_raw(speed_raw);
+        float throttle_expo = expo_amount_from_raw(speed_raw);
+        float steering_expo =
+            throttle_expo * STEERING_EXPO_MULTIPLIER;
         float speed = speed_scale_from_mode(mode_position);
+
+        if (steering_expo > 1.0f) {
+            steering_expo = 1.0f;
+        }
 
         if (controls_valid) {
             steering = apply_expo(
                 steering_from_raw(steering_sample.angle),
-                expo
+                steering_expo
             );
 
             throttle = apply_expo(
                 throttle_from_raw(throttle_sample.angle),
-                expo
+                throttle_expo
             );
 
             skid_steer_mix(
@@ -1080,15 +1094,16 @@ static void transmitter_task(void *arg)
 
             ESP_LOGI(
                 TAG,
-                "steer=%+.3f throttle=%+.3f expo=%.2f speed=%.2f | "
+                "steer=%+.3f throttle=%+.3f expoT/S=%.2f/%.2f speed=%.2f | "
                 "L=%+.3f R=%+.3f | mode=%d frame=%s | "
-                "link=%s hbSeq=%u age=%lldms hbRSSI=%s%d "
-                "rxVBAT=%.3fV fs=%lu | "
+                "link=%s hbSeq=%u age=%lldms hbRSSI=%s%d ctrlRSSI=%d "
+                "rxVBAT=%.3fV fs=%lu skips=%lu gapMax=%lums | "
                 "tx=%lu/%lu submitErr=%lu deferred=%lu hbRx=%lu | "
                 "cb=%lu/%lums >40/100/250=%lu/%lu/%lu",
                 steering,
                 throttle,
-                expo,
+                throttle_expo,
+                steering_expo,
                 speed,
                 left,
                 right,
@@ -1099,8 +1114,11 @@ static void transmitter_task(void *arg)
                 (long long)heartbeat_age_ms,
                 tx_heartbeat_rssi_valid ? "" : "?",
                 tx_heartbeat_rssi_valid ? tx_heartbeat_rssi : 0,
+                last_heartbeat_control_rssi,
                 last_heartbeat_battery_mv / 1000.0f,
                 (unsigned long)last_heartbeat_failsafe_count,
+                (unsigned long)last_heartbeat_sequence_skips,
+                (unsigned long)last_heartbeat_max_control_gap_ms,
                 (unsigned long)tx_mac_send_ok,
                 (unsigned long)tx_mac_send_fail,
                 (unsigned long)tx_send_submit_err,
@@ -1327,6 +1345,7 @@ static volatile bool rx_control_rssi_valid = false;
 static volatile int rx_control_rssi_interval_min = 0;
 static volatile bool rx_control_rssi_interval_min_valid = false;
 static volatile uint32_t rx_max_packet_gap_ms = 0;
+static volatile uint32_t rx_max_packet_gap_ever_ms = 0;
 static volatile uint32_t rx_failsafe_count = 0;
 static uint16_t rx_last_sequence = 0;
 static bool rx_sequence_valid = false;
@@ -1775,6 +1794,10 @@ static void recv_cb(const esp_now_recv_info_t *info,
         if (gap_ms > rx_max_packet_gap_ms) {
             rx_max_packet_gap_ms = gap_ms;
         }
+
+        if (gap_ms > rx_max_packet_gap_ever_ms) {
+            rx_max_packet_gap_ever_ms = gap_ms;
+        }
     }
 
     last_packet_us = now;
@@ -1873,6 +1896,8 @@ static void rx_heartbeat_task(void *arg)
                     ? rx_control_rssi
                     : 0),
             .failsafe_count = rx_failsafe_count,
+            .sequence_skips = rx_sequence_skips,
+            .max_control_gap_ms = rx_max_packet_gap_ever_ms,
             .flags =
                 (is_charging() ? 0x01U : 0U) |
                 (external_power_present() ? 0x02U : 0U)
