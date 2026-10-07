@@ -38,6 +38,11 @@ enum {
     RC_MSG_HEARTBEAT = 2
 };
 
+enum {
+    RC_CONTROL_FLAG_INVALID = 0x01U,
+    RC_CONTROL_FLAG_PIVOT = 0x02U
+};
+
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint16_t sequence;
@@ -1132,7 +1137,11 @@ static void transmitter_task(void *arg)
             (int16_t)lroundf(right * 1000.0f);
         packet.speed =
             (uint16_t)lroundf(speed * 1000.0f);
-        packet.flags = controls_valid ? 0 : 1;
+        packet.flags =
+            (controls_valid ? 0U : RC_CONTROL_FLAG_INVALID) |
+            (steering_mode == STEERING_MODE_PIVOT
+                ? RC_CONTROL_FLAG_PIVOT
+                : 0U);
 
         if (!espnow_send_pending) {
             uint16_t previous_sequence = packet.sequence;
@@ -1790,6 +1799,7 @@ static void motors_stop(void)
 
 
 static uint32_t motor_duty_from_demand(int16_t demand,
+                                       bool pivot_mode,
                                        motor_state_t *state)
 {
     int direction =
@@ -1822,8 +1832,13 @@ static uint32_t motor_duty_from_demand(int16_t demand,
         command = 1.0f;
     }
 
+    float chopper_command =
+        pivot_mode
+            ? MOTOR_PIVOT_CHOPPER_MAX_COMMAND
+            : MOTOR_CHOPPER_MAX_COMMAND;
+
     bool chopping =
-        command < MOTOR_CHOPPER_MAX_COMMAND;
+        command < chopper_command;
 
     float drive_command = command;
 
@@ -1833,7 +1848,7 @@ static uint32_t motor_duty_from_demand(int16_t demand,
             state->chopper_epoch_us = now;
         }
 
-        drive_command = MOTOR_CHOPPER_MAX_COMMAND;
+        drive_command = chopper_command;
     } else {
         state->chopper_active = false;
         state->chopper_epoch_us = 0;
@@ -1841,8 +1856,9 @@ static uint32_t motor_duty_from_demand(int16_t demand,
 
     /*
      * Convert logical wheel demand to the measured usable continuous
-     * PWM range. In chopper mode the ON pulse uses the threshold demand
-     * so each pulse is strong enough to sustain/restart the wheel.
+     * PWM range. Drive mode chops below its normal low-speed threshold.
+     * Pivot mode uses the stronger pivot threshold because both tracks
+     * must break static friction while skidding in opposite directions.
      */
     float duty_fraction =
         MOTOR_PWM_RUN_MIN +
@@ -1867,7 +1883,7 @@ static uint32_t motor_duty_from_demand(int16_t demand,
             (int64_t)MOTOR_CHOPPER_PERIOD_MS * 1000LL;
 
         float on_fraction =
-            command / MOTOR_CHOPPER_MAX_COMMAND;
+            command / chopper_command;
 
         if (on_fraction < 0.0f) on_fraction = 0.0f;
         if (on_fraction > 1.0f) on_fraction = 1.0f;
@@ -1894,6 +1910,7 @@ static void set_one_motor(int16_t demand,
                           ledc_channel_t forward,
                           ledc_channel_t reverse,
                           bool invert,
+                          bool pivot_mode,
                           motor_state_t *state)
 {
     if (invert) {
@@ -1904,7 +1921,7 @@ static void set_one_motor(int16_t demand,
     if (demand < -1000) demand = -1000;
 
     uint32_t duty =
-        motor_duty_from_demand(demand, state);
+        motor_duty_from_demand(demand, pivot_mode, state);
 
     int pwm_permille =
         (int)lroundf(
@@ -1935,13 +1952,16 @@ static void set_one_motor(int16_t demand,
     }
 }
 
-static void set_motors(int16_t left, int16_t right)
+static void set_motors(int16_t left,
+                       int16_t right,
+                       bool pivot_mode)
 {
     set_one_motor(
         left,
         PWM_L_FWD,
         PWM_L_REV,
         LEFT_INVERT,
+        pivot_mode,
         &left_motor_state
     );
 
@@ -1950,6 +1970,7 @@ static void set_motors(int16_t left, int16_t right)
         PWM_R_FWD,
         PWM_R_REV,
         RIGHT_INVERT,
+        pivot_mode,
         &right_motor_state
     );
 }
@@ -2185,6 +2206,7 @@ static void motor_task(void *arg)
     rc_packet_t packet;
     int16_t current_left = 0;
     int16_t current_right = 0;
+    bool current_pivot_mode = false;
 
     bool failsafe_active = true;
     static bool rx_failsafe_active = true;
@@ -2198,6 +2220,8 @@ static void motor_task(void *arg)
 
             current_left = packet.left;
             current_right = packet.right;
+            current_pivot_mode =
+                (packet.flags & RC_CONTROL_FLAG_PIVOT) != 0;
 
             failsafe_active = false;
 
@@ -2242,7 +2266,11 @@ static void motor_task(void *arg)
              * This allows low-speed chopper timing to run independently
              * of the 25 Hz ESP-NOW control packet rate.
              */
-            set_motors(current_left, current_right);
+            set_motors(
+                current_left,
+                current_right,
+                current_pivot_mode
+            );
         }
     }
 }
