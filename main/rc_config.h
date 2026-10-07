@@ -183,6 +183,11 @@
 #define MOTOR_R_FWD_GPIO        0   // INC
 #define MOTOR_R_REV_GPIO        7   // IND
 
+// Temporary RX bench characterization. When enabled, the receiver does
+// not start ESP-NOW; with the wheels lifted it repeatedly sweeps one motor
+// while holding the other at 50% logical demand.
+#define RX_MOTOR_RESPONSE_TEST   1
+
 // Motor PWM. Logical demand is remapped over the usable motor range:
 // a stopped/reversing motor gets a short 25% start boost, then running
 // demand is scaled over 20%..100%.
