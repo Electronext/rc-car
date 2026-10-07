@@ -267,6 +267,12 @@ static volatile uint32_t tx_mac_send_fail = 0;
 static volatile uint32_t tx_send_submit_err = 0;
 static volatile uint32_t tx_send_deferred = 0;
 static volatile int64_t last_tx_mac_success_us = 0;
+static volatile int64_t tx_send_started_us = 0;
+static volatile uint32_t tx_send_last_latency_us = 0;
+static volatile uint32_t tx_send_max_latency_us = 0;
+static volatile uint32_t tx_send_latency_over_40ms = 0;
+static volatile uint32_t tx_send_latency_over_100ms = 0;
+static volatile uint32_t tx_send_latency_over_250ms = 0;
 static volatile uint32_t tx_ack_rx_count = 0;
 static volatile int tx_ack_rssi = 0;
 static volatile bool tx_ack_rssi_valid = false;
@@ -741,13 +747,38 @@ static void send_cb(const wifi_tx_info_t *tx_info,
 {
     (void)tx_info;
 
+    int64_t now = esp_timer_get_time();
+    int64_t started_us = tx_send_started_us;
+
+    if (started_us != 0 && now >= started_us) {
+        uint32_t latency_us =
+            (uint32_t)(now - started_us);
+
+        tx_send_last_latency_us = latency_us;
+
+        if (latency_us > tx_send_max_latency_us) {
+            tx_send_max_latency_us = latency_us;
+        }
+
+        if (latency_us > 40000U) {
+            tx_send_latency_over_40ms++;
+        }
+        if (latency_us > 100000U) {
+            tx_send_latency_over_100ms++;
+        }
+        if (latency_us > 250000U) {
+            tx_send_latency_over_250ms++;
+        }
+    }
+
     if (status == ESP_NOW_SEND_SUCCESS) {
         tx_mac_send_ok++;
-        last_tx_mac_success_us = esp_timer_get_time();
+        last_tx_mac_success_us = now;
     } else {
         tx_mac_send_fail++;
     }
 
+    tx_send_started_us = 0;
     espnow_send_pending = false;
 }
 
@@ -922,6 +953,7 @@ static void transmitter_task(void *arg)
         if (!espnow_send_pending) {
             uint16_t previous_sequence = packet.sequence;
             packet.sequence++;
+            tx_send_started_us = esp_timer_get_time();
             espnow_send_pending = true;
 
             esp_err_t err = esp_now_send(
@@ -932,6 +964,7 @@ static void transmitter_task(void *arg)
 
             if (err != ESP_OK) {
                 packet.sequence = previous_sequence;
+                tx_send_started_us = 0;
                 espnow_send_pending = false;
                 tx_send_submit_err++;
 
@@ -1051,7 +1084,8 @@ static void transmitter_task(void *arg)
                 "steer=%+.3f throttle=%+.3f expo=%.2f speed=%.2f | "
                 "L=%+.3f R=%+.3f | mode=%d frame=%s | "
                 "rf=%s app=%s ack=%u age=%lldms rssi=%s%d | "
-                "txMAC=%lu/%lu submitErr=%lu deferred=%lu ackRx=%lu",
+                "txMAC=%lu/%lu submitErr=%lu deferred=%lu ackRx=%lu | "
+                "cb=%lu/%lums >40/100/250=%lu/%lu/%lu",
                 steering,
                 throttle,
                 expo,
@@ -1070,7 +1104,12 @@ static void transmitter_task(void *arg)
                 (unsigned long)tx_mac_send_fail,
                 (unsigned long)tx_send_submit_err,
                 (unsigned long)tx_send_deferred,
-                (unsigned long)tx_ack_rx_count
+                (unsigned long)tx_ack_rx_count,
+                (unsigned long)(tx_send_last_latency_us / 1000U),
+                (unsigned long)(tx_send_max_latency_us / 1000U),
+                (unsigned long)tx_send_latency_over_40ms,
+                (unsigned long)tx_send_latency_over_100ms,
+                (unsigned long)tx_send_latency_over_250ms
             );
         }
 
@@ -1295,6 +1334,7 @@ static volatile uint32_t rx_ack_submit_err = 0;
 static volatile bool rx_ack_send_pending = false;
 static volatile bool rx_ack_sequence_valid = false;
 static volatile uint16_t rx_ack_latest_sequence = 0;
+static TaskHandle_t rx_ack_task_handle = NULL;
 
 #define RX_RTC_MAGIC 0x52585231UL
 
@@ -1739,6 +1779,16 @@ static void recv_cb(const esp_now_recv_info_t *info,
     last_packet_us = now;
 
     /*
+     * Wake the ACK task from the received control packet rather than
+     * free-running an independent heartbeat timer. The ACK task rate
+     * limits itself to the configured average heartbeat period and
+     * deliberately transmits shortly after a control frame.
+     */
+    if (rx_ack_task_handle != NULL) {
+        xTaskNotifyGive(rx_ack_task_handle);
+    }
+
+    /*
      * Don't do motor peripheral work in the WiFi callback.
      * Just hand latest packet to the motor task.
      */
@@ -1774,19 +1824,44 @@ static void rx_ack_task(void *arg)
 {
     (void)arg;
 
-    TickType_t last_wake = xTaskGetTickCount();
+    int64_t next_due_us = 0;
 
     while (1) {
-        vTaskDelayUntil(
-            &last_wake,
-            pdMS_TO_TICKS(RC_ACK_PERIOD_MS)
-        );
+        /*
+         * A control packet notification is the timing reference.
+         * This avoids a free-running RX transmitter that can remain
+         * phase-locked against the 25 Hz TX control cadence.
+         */
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         if (!rx_ack_sequence_valid || rx_shutdown_pending) {
             continue;
         }
 
+        int64_t packet_us = last_packet_us;
+
+        if (next_due_us == 0) {
+            next_due_us = packet_us;
+        }
+
+        if (packet_us < next_due_us) {
+            continue;
+        }
+
         if (rx_ack_send_pending) {
+            continue;
+        }
+
+        TickType_t delay_ticks =
+            pdMS_TO_TICKS(RC_ACK_DELAY_MS);
+
+        if (delay_ticks < 1) {
+            delay_ticks = 1;
+        }
+
+        vTaskDelay(delay_ticks);
+
+        if (rx_shutdown_pending || rx_ack_send_pending) {
             continue;
         }
 
@@ -1813,7 +1888,20 @@ static void rx_ack_task(void *arg)
                 "ACK heartbeat send failed: %s",
                 esp_err_to_name(ack_err)
             );
+
+            continue;
         }
+
+        /*
+         * Advance the ideal 10 Hz phase rather than setting the next
+         * deadline relative to this packet. At 25 Hz this naturally
+         * alternates packet opportunities around 80/120 ms, retaining
+         * a 100 ms average heartbeat period.
+         */
+        do {
+            next_due_us +=
+                (int64_t)RC_ACK_PERIOD_MS * 1000LL;
+        } while (next_due_us <= packet_us);
     }
 }
 
@@ -2251,7 +2339,7 @@ static void receiver_init(void)
         3072,
         NULL,
         5,
-        NULL
+        &rx_ack_task_handle
     );
 
     xTaskCreate(
