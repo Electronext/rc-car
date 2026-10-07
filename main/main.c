@@ -27,7 +27,6 @@
 #include "esp_adc/adc_cali_scheme.h"
 
 #include "rc_config.h"
-#include "as5048b_sanity.h"
 #include "as5048b_controls.h"
 #include "status_led.h"
 #include "reset_diag.h"
@@ -1303,11 +1302,6 @@ static void log_local_mac(const char *role,
 static void transmitter_init(void)
 {
     ESP_LOGI(TAG, "Starting TRANSMITTER");
-
-#if AS5048B_SANITY_TEST
-    as5048b_sanity_init();
-    return;
-#endif
 
     transmitter_adc_init();
     charge_status_init();
