@@ -36,8 +36,8 @@
 #define CHARGE_STATUS_ENABLED   1
 #define STATUS_LED_GPIO         8
 #define HEADLIGHT_GPIO          20
-#define TAIL_LIGHT_GPIO         21
-#define REVERSE_LIGHT_GPIO       6
+#define REVERSE_LIGHT_GPIO      21
+#define TAIL_LIGHT_GPIO          6
 #endif
 
 // Charger status is active LOW (!CHG). On RX it is only meaningful
@@ -207,7 +207,7 @@
 #define LEFT_INVERT             1
 #define RIGHT_INVERT            1
 
-// Vehicle lighting on RX. Head/tail use the two spare LEDC channels;
-// reverse is binary. Values are fractions of full PWM.
+// Vehicle lighting on RX. Head/reverse use the two spare LEDC channels;
+// tail lights are binary full-on/full-off. Values are fractions of full PWM.
 #define VEHICLE_LIGHT_DIM_LEVEL       0.20f
 #define VEHICLE_LIGHT_BRIGHT_LEVEL    1.00f
