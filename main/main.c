@@ -529,20 +529,21 @@ static float throttle_from_raw(uint16_t raw)
 }
 
 
-static float curvature_shape_from_raw(int raw)
+static float curvature_exponent_from_raw(int raw)
 {
-    float a =
+    float p =
         (float)(raw - CURVATURE_POT_ADC_MIN) /
         (float)(CURVATURE_POT_ADC_MAX - CURVATURE_POT_ADC_MIN);
 
-    if (a < 0.0f) a = 0.0f;
-    if (a > 1.0f) a = 1.0f;
+    if (p < 0.0f) p = 0.0f;
+    if (p > 1.0f) p = 1.0f;
 
 #if CURVATURE_POT_INVERT
-    a = 1.0f - a;
+    p = 1.0f - p;
 #endif
 
-    return a * CURVATURE_SHAPE_MAX;
+    return CURVATURE_EXPONENT_MIN +
+           p * (CURVATURE_EXPONENT_MAX - CURVATURE_EXPONENT_MIN);
 }
 
 
