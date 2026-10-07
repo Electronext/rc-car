@@ -27,6 +27,10 @@
 #define MODE_SWITCH_GPIO        4   // 3-way speed selector
 #define CHARGE_STATUS_GPIO      5
 #else
+// RX:
+//   GPIO3 VBAT: LiPo+ -> 100k -> GPIO3 -> 100k -> GND
+//   GPIO1 VUSB: VUSB -> 100k -> GPIO1 -> 150k -> GND
+//   GPIO4 !CHG: active-low charger open-drain status
 #define BATTERY_GPIO            3
 #define VUSB_PRESENT_GPIO       1
 #define CHARGE_STATUS_GPIO      4
