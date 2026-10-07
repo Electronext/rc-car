@@ -20,9 +20,9 @@
 // Role-specific controls / indicators.
 #if RC_TRANSMITTER
 #define BATTERY_GPIO            0
-#define SPEED_GPIO              1   // speed pot now controls expo
+#define CURVATURE_POT_GPIO      1   // curvature-shape calibration pot
 #define STATUS_LED_GPIO         3
-#define MODE_SWITCH_GPIO        4   // 3-way speed selector
+#define MODE_SWITCH_GPIO        4   // 3-way expo selector
 #define CHARGE_STATUS_GPIO      5
 #define CHARGE_STATUS_ENABLED   0   // !CHG not wired on TX yet
 #else
@@ -46,30 +46,27 @@
 #define BATTERY_DIVIDER_TOP_OHMS       100000
 #define BATTERY_DIVIDER_BOTTOM_OHMS    100000
 
-// Expo pot wiring: 3.3V -> 330R -> 1k linear pot -> GND,
-// with the wiper connected to SPEED_GPIO. The existing direction
-// convention is retained: full CCW = maximum expo, full CW = zero expo.
-#define SPEED_POT_SERIES_OHMS          330
-#define SPEED_POT_OHMS                 1000
+// Curvature-shape calibration pot:
+// 3.3V -> 330R -> 1k linear pot -> GND, wiper to CURVATURE_POT_GPIO.
+// During steering calibration it varies a continuously from 0..1 in:
+//
+//     k = |s| + a*|s|*(1-|s|)
+//
+// a=0 gives the original linear-curvature mapping. a=1 is the strongest
+// monotonic shaping that still reaches k=1 only at full steering.
+#define CURVATURE_POT_SERIES_OHMS      330
+#define CURVATURE_POT_OHMS             1000
+#define CURVATURE_POT_ADC_MIN            4
+#define CURVATURE_POT_ADC_MAX         3385
+#define CURVATURE_POT_INVERT             0
+#define CURVATURE_SHAPE_MAX            1.00f
 
-// Measured ADC endpoints from full mechanical travel.
-#define SPEED_POT_ADC_MIN               4
-#define SPEED_POT_ADC_MAX               3385
-#define SPEED_POT_INVERT                1
-
-// Maximum throttle centre-softening at full CCW. Expo is a
-// linear/cubic blend: y = (1-e)*x + e*x^3.
-// 0 = linear, 1 = pure cubic.
-#define CONTROL_EXPO_MAX               1.00f
-
-// Steering needs more centre softening than throttle. Steering expo is
-// throttle expo multiplied by this factor, then clamped to 1.0.
-#define STEERING_EXPO_MULTIPLIER       1.20f
-
-// Three-way switch speed ceilings: LOW / CENTER / HIGH.
-#define SPEED_LEVEL_LOW                0.30f
-#define SPEED_LEVEL_MEDIUM             0.60f
-#define SPEED_LEVEL_HIGH               1.00f
+// Three-way switch selects exact expo for both steering and throttle.
+// Motor speed ceiling is fixed at 100% during this calibration.
+#define EXPO_LEVEL_LOW                 0.00f
+#define EXPO_LEVEL_MEDIUM              0.50f
+#define EXPO_LEVEL_HIGH                1.00f
+#define CALIBRATION_SPEED_LIMIT        1.00f
 
 // AS5048B magnetic joystick sensors.
 #define AS5048B_SDA_GPIO        6
@@ -156,7 +153,7 @@
 #define TX_SLEEP_POLL_MS               1000
 #define TX_WAKE_STEERING_COUNTS          80
 #define TX_WAKE_THROTTLE_COUNTS          80
-#define TX_WAKE_SPEED_COUNTS              20
+#define TX_WAKE_CURVATURE_COUNTS          20
 
 // ADC oneshot can transiently return ESP_ERR_TIMEOUT when the ADC
 // hardware is busy. Retry rather than treating that as a fatal error.
@@ -182,14 +179,6 @@
 #define MOTOR_L_REV_GPIO        5   // INB
 #define MOTOR_R_FWD_GPIO        0   // INC
 #define MOTOR_R_REV_GPIO        7   // IND
-
-// Temporary end-to-end motor response characterization.
-// RX remains in its normal radio/control path and reports actual PWM
-// through the heartbeat. TX sends a repeatable left/right demand sweep.
-#define RX_MOTOR_RESPONSE_TEST   0
-#define TX_MOTOR_RESPONSE_TEST   1
-#define MOTOR_RESPONSE_TEST_STEP_MS   2000
-#define MOTOR_RESPONSE_TEST_PAUSE_MS  3000
 
 // Motor PWM. Logical demand is remapped over the usable motor range:
 // a stopped/reversing motor gets a short 25% start boost, then running

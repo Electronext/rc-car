@@ -298,14 +298,14 @@ static volatile bool tx_heartbeat_rssi_valid = false;
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 static adc_cali_handle_t battery_cali_handle = NULL;
 static adc_channel_t battery_channel;
-static adc_channel_t speed_channel;
+static adc_channel_t curvature_channel;
 static adc_channel_t mode_switch_channel;
 
 RTC_DATA_ATTR static uint32_t rtc_magic = 0;
 RTC_DATA_ATTR static uint8_t rtc_sleep_reason = TX_SLEEP_NONE;
 RTC_DATA_ATTR static uint16_t rtc_steering_raw = 0;
 RTC_DATA_ATTR static uint16_t rtc_throttle_raw = 0;
-RTC_DATA_ATTR static uint16_t rtc_speed_raw = 0;
+RTC_DATA_ATTR static uint16_t rtc_curvature_raw = 0;
 RTC_DATA_ATTR static int8_t rtc_mode_position = 0;
 
 
@@ -411,10 +411,10 @@ static void transmitter_adc_init(void)
     );
 
     adc_channel_init(
-        SPEED_GPIO,
-        &speed_channel,
+        CURVATURE_POT_GPIO,
+        &curvature_channel,
         &chan_cfg,
-        "Speed pot"
+        "Curvature pot"
     );
 
     adc_channel_init(
@@ -529,25 +529,34 @@ static float throttle_from_raw(uint16_t raw)
 }
 
 
-static float expo_amount_from_raw(int raw)
+static float curvature_shape_from_raw(int raw)
 {
-    float p =
-        (float)(raw - SPEED_POT_ADC_MIN) /
-        (float)(SPEED_POT_ADC_MAX - SPEED_POT_ADC_MIN);
+    float a =
+        (float)(raw - CURVATURE_POT_ADC_MIN) /
+        (float)(CURVATURE_POT_ADC_MAX - CURVATURE_POT_ADC_MIN);
 
-    if (p < 0.0f) p = 0.0f;
-    if (p > 1.0f) p = 1.0f;
+    if (a < 0.0f) a = 0.0f;
+    if (a > 1.0f) a = 1.0f;
 
-#if SPEED_POT_INVERT
-    p = 1.0f - p;
+#if CURVATURE_POT_INVERT
+    a = 1.0f - a;
 #endif
 
-    /*
-     * p follows the old speed-pot convention:
-     *   0 = full CCW / old minimum-speed end
-     *   1 = full CW  / old full-speed end
-     */
-    return CONTROL_EXPO_MAX * (1.0f - p);
+    return a * CURVATURE_SHAPE_MAX;
+}
+
+
+static float expo_from_mode(int mode_position)
+{
+    if (mode_position < 0) {
+        return EXPO_LEVEL_LOW;
+    }
+
+    if (mode_position > 0) {
+        return EXPO_LEVEL_HIGH;
+    }
+
+    return EXPO_LEVEL_MEDIUM;
 }
 
 
@@ -559,20 +568,6 @@ static float apply_expo(float value, float expo)
     return
         (1.0f - expo) * value +
         expo * value * value * value;
-}
-
-
-static float speed_scale_from_mode(int mode_position)
-{
-    if (mode_position < 0) {
-        return SPEED_LEVEL_LOW;
-    }
-
-    if (mode_position > 0) {
-        return SPEED_LEVEL_HIGH;
-    }
-
-    return SPEED_LEVEL_MEDIUM;
 }
 
 
@@ -648,6 +643,8 @@ static const char *steering_mode_name(steering_mode_t mode)
  */
 static void arc_drive_mix(float steering,
                           float velocity,
+                          float shape,
+                          float *curvature,
                           float *left,
                           float *right)
 {
@@ -657,9 +654,23 @@ static void arc_drive_mix(float steering,
         steer_mag = 1.0f;
     }
 
+    if (shape < 0.0f) shape = 0.0f;
+    if (shape > 1.0f) shape = 1.0f;
+
+    float k =
+        steer_mag +
+        shape * steer_mag * (1.0f - steer_mag);
+
+    if (k > 1.0f) {
+        k = 1.0f;
+    }
+
+    *curvature =
+        steering < 0.0f ? -k : k;
+
     float inner_ratio =
-        (1.0f - steer_mag) /
-        (1.0f + steer_mag);
+        (1.0f - k) /
+        (1.0f + k);
 
     if (steering > 0.0f) {
         *left = velocity;
@@ -675,8 +686,8 @@ static void arc_drive_mix(float steering,
 
 
 /*
- * Zero-throttle pivot. The three-position speed selector still limits
- * pivot authority, using the same soft limiter as normal drive speed.
+ * Zero-throttle pivot. During this calibration the speed ceiling is
+ * fixed at 100%, so pivot authority follows the expo-shaped steering.
  */
 static void pivot_mix(float steering,
                       float speed_limit,
@@ -695,7 +706,7 @@ static void enter_timed_sleep(uint8_t reason,
                               uint32_t sleep_ms,
                               uint16_t steering_raw,
                               uint16_t throttle_raw,
-                              uint16_t speed_raw,
+                              uint16_t curvature_raw,
                               int mode_position)
 {
     status_led_off();
@@ -704,7 +715,7 @@ static void enter_timed_sleep(uint8_t reason,
     rtc_sleep_reason = reason;
     rtc_steering_raw = steering_raw;
     rtc_throttle_raw = throttle_raw;
-    rtc_speed_raw = speed_raw;
+    rtc_curvature_raw = curvature_raw;
     rtc_mode_position = (int8_t)mode_position;
 
     ESP_ERROR_CHECK(
@@ -761,7 +772,7 @@ static void low_battery_warning_and_sleep(int battery_mv,
 
 static bool controls_moved_since_sleep(uint16_t steering_raw,
                                        uint16_t throttle_raw,
-                                       uint16_t speed_raw,
+                                       uint16_t curvature_raw,
                                        int mode_position)
 {
     if (abs((int)steering_raw - (int)rtc_steering_raw) >=
@@ -774,8 +785,8 @@ static bool controls_moved_since_sleep(uint16_t steering_raw,
         return true;
     }
 
-    if (abs((int)speed_raw - (int)rtc_speed_raw) >=
-        TX_WAKE_SPEED_COUNTS) {
+    if (abs((int)curvature_raw - (int)rtc_curvature_raw) >=
+        TX_WAKE_CURVATURE_COUNTS) {
         return true;
     }
 
@@ -909,72 +920,6 @@ static void status_task(void *arg)
 }
 
 
-#if TX_MOTOR_RESPONSE_TEST
-static void tx_motor_response_test_demands(int64_t now_us,
-                                           float *left,
-                                           float *right,
-                                           const char **phase,
-                                           int *step)
-{
-    static const float stepped[] = {
-        0.30f, 0.20f, 0.15f, 0.10f,
-        0.05f, 0.02f, 0.00f
-    };
-
-    const int step_count =
-        (int)(sizeof(stepped) / sizeof(stepped[0]));
-
-    const int64_t pause_us =
-        (int64_t)MOTOR_RESPONSE_TEST_PAUSE_MS * 1000LL;
-    const int64_t step_us =
-        (int64_t)MOTOR_RESPONSE_TEST_STEP_MS * 1000LL;
-    const int64_t sweep_us =
-        (int64_t)step_count * step_us;
-    const int64_t cycle_us =
-        pause_us + sweep_us + pause_us + sweep_us + pause_us;
-
-    int64_t pos = now_us % cycle_us;
-
-    *left = 0.0f;
-    *right = 0.0f;
-    *phase = "PAUSE";
-    *step = -1;
-
-    if (pos < pause_us) {
-        return;
-    }
-
-    pos -= pause_us;
-
-    if (pos < sweep_us) {
-        int i = (int)(pos / step_us);
-        *left = 0.50f;
-        *right = stepped[i];
-        *phase = "A";
-        *step = i;
-        return;
-    }
-
-    pos -= sweep_us;
-
-    if (pos < pause_us) {
-        return;
-    }
-
-    pos -= pause_us;
-
-    if (pos < sweep_us) {
-        int i = (int)(pos / step_us);
-        *left = stepped[i];
-        *right = 0.50f;
-        *phase = "B";
-        *step = i;
-        return;
-    }
-}
-#endif
-
-
 static void transmitter_task(void *arg)
 {
     (void)arg;
@@ -998,7 +943,7 @@ static void transmitter_task(void *arg)
     float pivot_blend_start_left = 0.0f;
     float pivot_blend_start_right = 0.0f;
 
-    int activity_speed_raw = adc_read_channel(speed_channel);
+    int activity_curvature_raw = adc_read_channel(curvature_channel);
     int activity_mode_position =
         mode_switch_position_from_raw(
             adc_read_channel(mode_switch_channel)
@@ -1014,7 +959,7 @@ static void transmitter_task(void *arg)
         esp_err_t throttle_err =
             rc_as5048b_read_throttle(&throttle_sample);
 
-        int speed_raw = adc_read_channel(speed_channel);
+        int curvature_raw = adc_read_channel(curvature_channel);
         int mode_raw = adc_read_channel(mode_switch_channel);
         int mode_position =
             mode_switch_position_from_raw(mode_raw);
@@ -1026,29 +971,24 @@ static void transmitter_task(void *arg)
             rc_as5048b_sample_valid(&throttle_sample);
 
         float steering = 0.0f;
+        float curvature = 0.0f;
         float throttle = 0.0f;
         float left = 0.0f;
         float right = 0.0f;
-        const char *test_phase = "-";
-        int test_step = -1;
-        float throttle_expo = expo_amount_from_raw(speed_raw);
-        float steering_expo =
-            throttle_expo * STEERING_EXPO_MULTIPLIER;
-        float speed = speed_scale_from_mode(mode_position);
-
-        if (steering_expo > 1.0f) {
-            steering_expo = 1.0f;
-        }
+        float curvature_shape =
+            curvature_shape_from_raw(curvature_raw);
+        float expo = expo_from_mode(mode_position);
+        float speed = CALIBRATION_SPEED_LIMIT;
 
         if (controls_valid) {
             steering = apply_expo(
                 steering_from_raw(steering_sample.angle),
-                steering_expo
+                expo
             );
 
             throttle = apply_expo(
                 throttle_from_raw(throttle_sample.angle),
-                throttle_expo
+                expo
             );
 
             bool steering_neutral = steering == 0.0f;
@@ -1096,9 +1036,9 @@ static void transmitter_task(void *arg)
                 );
             } else if (steering_mode == STEERING_MODE_DRIVE) {
                 /*
-                 * Apply LOW/MED/HIGH to signed velocity before mixing.
-                 * The wheel ratio therefore depends only on steering,
-                 * so commanded radius is independent of throttle.
+                 * Apply the fixed calibration speed ceiling before mixing.
+                 * Wheel ratio depends only on shaped steering curvature,
+                 * so commanded radius remains independent of throttle.
                  */
                 float velocity =
                     apply_speed_limit(throttle, speed);
@@ -1109,6 +1049,8 @@ static void transmitter_task(void *arg)
                 arc_drive_mix(
                     steering,
                     velocity,
+                    curvature_shape,
+                    &curvature,
                     &drive_left,
                     &drive_right
                 );
@@ -1154,29 +1096,13 @@ static void transmitter_task(void *arg)
             pivot_to_drive_blending = false;
         }
 
-#if TX_MOTOR_RESPONSE_TEST
-        tx_motor_response_test_demands(
-            esp_timer_get_time(),
-            &left,
-            &right,
-            &test_phase,
-            &test_step
-        );
-
-        last_activity_us = esp_timer_get_time();
-#endif
-
         packet.left =
             (int16_t)lroundf(left * 1000.0f);
         packet.right =
             (int16_t)lroundf(right * 1000.0f);
         packet.speed =
             (uint16_t)lroundf(speed * 1000.0f);
-#if TX_MOTOR_RESPONSE_TEST
-        packet.flags = 0;
-#else
         packet.flags = controls_valid ? 0 : 1;
-#endif
 
         if (!espnow_send_pending) {
             uint16_t previous_sequence = packet.sequence;
@@ -1208,21 +1134,22 @@ static void transmitter_task(void *arg)
 
         int64_t now = esp_timer_get_time();
 
-        bool expo_changed =
-            abs(speed_raw - activity_speed_raw) >= TX_WAKE_SPEED_COUNTS;
+        bool curvature_shape_changed =
+            abs(curvature_raw - activity_curvature_raw) >=
+                TX_WAKE_CURVATURE_COUNTS;
 
         bool mode_changed =
             mode_position != activity_mode_position;
 
         if (steering != 0.0f ||
             throttle != 0.0f ||
-            expo_changed ||
+            curvature_shape_changed ||
             mode_changed) {
 
             last_activity_us = now;
 
-            if (expo_changed) {
-                activity_speed_raw = speed_raw;
+            if (curvature_shape_changed) {
+                activity_curvature_raw = curvature_raw;
             }
 
             if (mode_changed) {
@@ -1285,7 +1212,7 @@ static void transmitter_task(void *arg)
                 TX_SLEEP_POLL_MS,
                 steering_sample.angle,
                 throttle_sample.angle,
-                speed_raw,
+                curvature_raw,
                 mode_position
             );
         }
@@ -1302,24 +1229,23 @@ static void transmitter_task(void *arg)
 
             ESP_LOGI(
                 TAG,
-                "steer=%+.3f throttle=%+.3f expoT/S=%.2f/%.2f speed=%.2f | "
-                "L=%+.3f R=%+.3f | mode=%d mix=%s%s test=%s%d | "
+                "steer=%+.3f k=%+.3f a=%.3f throttle=%+.3f expo=%.2f speed=%.2f | "
+                "L=%+.3f R=%+.3f | mode=%d mix=%s%s | "
                 "link=%s hbSeq=%u age=%lldms hbRSSI=%s%d ctrlRSSI=%d "
                 "rxPWM=%+.3f/%+.3f rxVBAT=%.3fV fs=%lu skips=%lu gapMax=%lums | "
                 "tx=%lu/%lu submitErr=%lu deferred=%lu hbRx=%lu | "
                 "cb=%lu/%lums >40/100/250=%lu/%lu/%lu",
                 steering,
+                curvature,
+                curvature_shape,
                 throttle,
-                throttle_expo,
-                steering_expo,
+                expo,
                 speed,
                 left,
                 right,
                 mode_position,
                 steering_mode_name(steering_mode),
                 pivot_to_drive_blending ? "/BLEND" : "",
-                test_phase,
-                test_step,
                 linked ? "OK" : "WAIT",
                 (unsigned)last_heartbeat_sequence,
                 (long long)heartbeat_age_ms,
@@ -1460,7 +1386,7 @@ static void transmitter_init(void)
             rc_as5048b_read_throttle(&throttle_sample)
         );
 
-        int speed_raw = adc_read_channel(speed_channel);
+        int curvature_raw = adc_read_channel(curvature_channel);
         int mode_position =
             mode_switch_position_from_raw(
                 adc_read_channel(mode_switch_channel)
@@ -1469,7 +1395,7 @@ static void transmitter_init(void)
         if (!controls_moved_since_sleep(
                 steering_sample.angle,
                 throttle_sample.angle,
-                speed_raw,
+                curvature_raw,
                 mode_position)) {
 
             enter_timed_sleep(
@@ -1477,7 +1403,7 @@ static void transmitter_init(void)
                 TX_SLEEP_POLL_MS,
                 rtc_steering_raw,
                 rtc_throttle_raw,
-                rtc_speed_raw,
+                rtc_curvature_raw,
                 rtc_mode_position
             );
         }
