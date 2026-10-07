@@ -917,8 +917,8 @@ static void tx_motor_response_test_demands(int64_t now_us,
                                            int *step)
 {
     static const float stepped[] = {
-        0.50f, 0.40f, 0.30f, 0.20f, 0.15f,
-        0.10f, 0.05f, 0.02f, 0.00f
+        0.30f, 0.20f, 0.15f, 0.10f,
+        0.05f, 0.02f, 0.00f
     };
 
     const int step_count =
