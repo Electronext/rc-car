@@ -111,7 +111,7 @@
 // exactly +/-1.0 at full travel even when the neutral deadband changes.
 
 // Three-position ON-OFF-ON selector on GPIO4. Measured positions are
-// approximately 3 / 2219 / 4095 raw for LOW / CENTER / HIGH.
+// approximately 3 / 2219 / 4095 raw for LOW / FULL / STUPID.
 // Thresholds intentionally leave very large guard bands.
 #define MODE_SWITCH_ADC_LOW_MAX       1000
 #define MODE_SWITCH_ADC_HIGH_MIN      3000
@@ -132,7 +132,7 @@
 #define RC_LINK_TIMEOUT_MS             RC_HEARTBEAT_TIMEOUT_MS
 #define STATUS_LED_ON_MS               300
 #define STATUS_LED_OFF_MS              700
-#define STATUS_LED_BRIGHTNESS          128
+#define STATUS_LED_BRIGHTNESS          128   // ~50% global WS2812 cap
 #define STATUS_LED_SELF_TEST_MS         150
 #define CHARGE_BREATHE_PERIOD_MS       2000
 #define DISCONNECTED_SLEEP_MS        120000
