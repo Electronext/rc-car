@@ -62,8 +62,8 @@
 #define CONTROL_EXPO_MAX               0.70f
 
 // Three-way switch speed ceilings: LOW / CENTER / HIGH.
-#define SPEED_LEVEL_LOW                0.50f
-#define SPEED_LEVEL_MEDIUM             0.75f
+#define SPEED_LEVEL_LOW                0.30f
+#define SPEED_LEVEL_MEDIUM             0.60f
 #define SPEED_LEVEL_HIGH               1.00f
 
 // AS5048B magnetic joystick sensors.
