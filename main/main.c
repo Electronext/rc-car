@@ -1837,6 +1837,7 @@ static void set_motors(int16_t left, int16_t right)
 }
 
 
+#if RX_MOTOR_RESPONSE_TEST
 static float motor_nominal_run_duty_fraction(int16_t demand)
 {
     if (demand == 0) {
@@ -1856,7 +1857,6 @@ static float motor_nominal_run_duty_fraction(int16_t demand)
 }
 
 
-#if RX_MOTOR_RESPONSE_TEST
 static void motor_response_test_task(void *arg)
 {
     (void)arg;
