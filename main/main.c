@@ -40,7 +40,8 @@ enum {
 
 enum {
     RC_CONTROL_FLAG_INVALID = 0x01U,
-    RC_CONTROL_FLAG_PIVOT = 0x02U
+    RC_CONTROL_FLAG_PIVOT = 0x02U,
+    RC_CONTROL_FLAG_STUPID = 0x04U
 };
 
 typedef struct __attribute__((packed)) {
@@ -303,14 +304,14 @@ static volatile bool tx_heartbeat_rssi_valid = false;
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 static adc_cali_handle_t battery_cali_handle = NULL;
 static adc_channel_t battery_channel;
-static adc_channel_t pivot_expo_channel;
+static adc_channel_t throttle_expo_channel;
 static adc_channel_t mode_switch_channel;
 
 RTC_DATA_ATTR static uint32_t rtc_magic = 0;
 RTC_DATA_ATTR static uint8_t rtc_sleep_reason = TX_SLEEP_NONE;
 RTC_DATA_ATTR static uint16_t rtc_steering_raw = 0;
 RTC_DATA_ATTR static uint16_t rtc_throttle_raw = 0;
-RTC_DATA_ATTR static uint16_t rtc_pivot_expo_raw = 0;
+RTC_DATA_ATTR static uint16_t rtc_throttle_expo_raw = 0;
 RTC_DATA_ATTR static int8_t rtc_mode_position = 0;
 
 
@@ -416,10 +417,10 @@ static void transmitter_adc_init(void)
     );
 
     adc_channel_init(
-        PIVOT_EXPO_POT_GPIO,
-        &pivot_expo_channel,
+        THROTTLE_EXPO_POT_GPIO,
+        &throttle_expo_channel,
         &chan_cfg,
-        "Pivot expo pot"
+        "Throttle expo pot"
     );
 
     adc_channel_init(
@@ -534,22 +535,20 @@ static float throttle_from_raw(uint16_t raw)
 }
 
 
-static float pivot_exponent_from_raw(int raw)
+static float throttle_expo_from_raw(int raw)
 {
-    float p =
-        (float)(raw - PIVOT_EXPO_POT_ADC_MIN) /
-        (float)(PIVOT_EXPO_POT_ADC_MAX - PIVOT_EXPO_POT_ADC_MIN);
+    float e =
+        (float)(raw - THROTTLE_EXPO_POT_ADC_MIN) /
+        (float)(THROTTLE_EXPO_POT_ADC_MAX - THROTTLE_EXPO_POT_ADC_MIN);
 
-    if (p < 0.0f) p = 0.0f;
-    if (p > 1.0f) p = 1.0f;
+    if (e < 0.0f) e = 0.0f;
+    if (e > 1.0f) e = 1.0f;
 
-#if PIVOT_EXPO_POT_INVERT
-    p = 1.0f - p;
+#if THROTTLE_EXPO_POT_INVERT
+    e = 1.0f - e;
 #endif
 
-    return
-        PIVOT_EXPO_EXPONENT_MIN +
-        p * (PIVOT_EXPO_EXPONENT_MAX - PIVOT_EXPO_EXPONENT_MIN);
+    return e * THROTTLE_EXPO_MAX;
 }
 
 
@@ -571,19 +570,104 @@ static float apply_power_expo(float value, float exponent)
 }
 
 
-static float expo_from_mode(int mode_position)
+static float speed_limit_from_mode(int mode_position)
+{
+    return mode_position < 0
+        ? DRIVE_SPEED_LOW
+        : DRIVE_SPEED_FULL;
+}
+
+
+static const char *drive_mode_name(int mode_position)
 {
     if (mode_position < 0) {
-        return EXPO_LEVEL_LOW;
+        return "LOW";
     }
 
     if (mode_position > 0) {
-        return EXPO_LEVEL_HIGH;
+        return "STUPID";
     }
 
-    return EXPO_LEVEL_MEDIUM;
+    return "FULL";
 }
 
+
+static float stupid_throttle_command(float throttle)
+{
+    float magnitude = fabsf(throttle);
+
+    if (magnitude < STUPID_THROTTLE_THRESHOLD) {
+        return 0.0f;
+    }
+
+    float span = 1.0f - STUPID_THROTTLE_THRESHOLD;
+    float ramp = span > 0.0f
+        ? (magnitude - STUPID_THROTTLE_THRESHOLD) / span
+        : 1.0f;
+
+    if (ramp < 0.0f) ramp = 0.0f;
+    if (ramp > 1.0f) ramp = 1.0f;
+
+    float output =
+        STUPID_PWM_MIN +
+        ramp * (1.0f - STUPID_PWM_MIN);
+
+    return throttle < 0.0f ? -output : output;
+}
+
+
+static float stupid_steering_command(uint16_t raw)
+{
+    const int threshold_counts =
+        (int)lroundf(
+            STUPID_STEERING_THRESHOLD_DEG *
+            (16384.0f / 360.0f)
+        );
+
+    int delta = (int)raw - STEERING_CENTER_RAW;
+    int magnitude_counts = abs(delta);
+
+    if (magnitude_counts < threshold_counts) {
+        return 0.0f;
+    }
+
+    int endpoint_counts =
+        delta < 0
+            ? STEERING_CENTER_RAW - STEERING_RAW_MIN
+            : STEERING_RAW_MAX - STEERING_CENTER_RAW;
+
+    int ramp_counts = endpoint_counts - threshold_counts;
+
+    float ramp =
+        ramp_counts > 0
+            ? (float)(magnitude_counts - threshold_counts) /
+              (float)ramp_counts
+            : 1.0f;
+
+    if (ramp < 0.0f) ramp = 0.0f;
+    if (ramp > 1.0f) ramp = 1.0f;
+
+    float output =
+        STUPID_PWM_MIN +
+        ramp * (1.0f - STUPID_PWM_MIN);
+
+    float signed_output =
+        delta < 0 ? -output : output;
+
+#if STEERING_INVERT
+    signed_output = -signed_output;
+#endif
+
+    return signed_output;
+}
+
+
+static float clamp_unit(float value)
+{
+    if (value < -1.0f) return -1.0f;
+    if (value > 1.0f) return 1.0f;
+    return value;
+}
 
 static float apply_expo(float value, float expo)
 {
@@ -731,7 +815,7 @@ static void enter_timed_sleep(uint8_t reason,
                               uint32_t sleep_ms,
                               uint16_t steering_raw,
                               uint16_t throttle_raw,
-                              uint16_t pivot_expo_raw,
+                              uint16_t throttle_expo_raw,
                               int mode_position)
 {
     status_led_off();
@@ -740,7 +824,7 @@ static void enter_timed_sleep(uint8_t reason,
     rtc_sleep_reason = reason;
     rtc_steering_raw = steering_raw;
     rtc_throttle_raw = throttle_raw;
-    rtc_pivot_expo_raw = pivot_expo_raw;
+    rtc_throttle_expo_raw = throttle_expo_raw;
     rtc_mode_position = (int8_t)mode_position;
 
     ESP_ERROR_CHECK(
@@ -797,7 +881,7 @@ static void low_battery_warning_and_sleep(int battery_mv,
 
 static bool controls_moved_since_sleep(uint16_t steering_raw,
                                        uint16_t throttle_raw,
-                                       uint16_t pivot_expo_raw,
+                                       uint16_t throttle_expo_raw,
                                        int mode_position)
 {
     if (abs((int)steering_raw - (int)rtc_steering_raw) >=
@@ -810,8 +894,8 @@ static bool controls_moved_since_sleep(uint16_t steering_raw,
         return true;
     }
 
-    if (abs((int)pivot_expo_raw - (int)rtc_pivot_expo_raw) >=
-        TX_WAKE_PIVOT_EXPO_COUNTS) {
+    if (abs((int)throttle_expo_raw - (int)rtc_throttle_expo_raw) >=
+        TX_WAKE_THROTTLE_EXPO_COUNTS) {
         return true;
     }
 
@@ -968,7 +1052,7 @@ static void transmitter_task(void *arg)
     float pivot_blend_start_left = 0.0f;
     float pivot_blend_start_right = 0.0f;
 
-    int activity_pivot_expo_raw = adc_read_channel(pivot_expo_channel);
+    int activity_throttle_expo_raw = adc_read_channel(throttle_expo_channel);
     int activity_mode_position =
         mode_switch_position_from_raw(
             adc_read_channel(mode_switch_channel)
@@ -984,7 +1068,7 @@ static void transmitter_task(void *arg)
         esp_err_t throttle_err =
             rc_as5048b_read_throttle(&throttle_sample);
 
-        int pivot_expo_raw = adc_read_channel(pivot_expo_channel);
+        int throttle_expo_raw = adc_read_channel(throttle_expo_channel);
         int mode_raw = adc_read_channel(mode_switch_channel);
         int mode_position =
             mode_switch_position_from_raw(mode_raw);
@@ -1003,7 +1087,7 @@ static void transmitter_task(void *arg)
         float left = 0.0f;
         float right = 0.0f;
         float pivot_exponent =
-            pivot_exponent_from_raw(pivot_expo_raw);
+            pivot_exponent_from_raw(throttle_expo_raw);
         float expo = expo_from_mode(mode_position);
         float speed = CALIBRATION_SPEED_LIMIT;
 
@@ -1173,22 +1257,22 @@ static void transmitter_task(void *arg)
 
         int64_t now = esp_timer_get_time();
 
-        bool pivot_expo_changed =
-            abs(pivot_expo_raw - activity_pivot_expo_raw) >=
-                TX_WAKE_PIVOT_EXPO_COUNTS;
+        bool throttle_expo_changed =
+            abs(throttle_expo_raw - activity_throttle_expo_raw) >=
+                TX_WAKE_THROTTLE_EXPO_COUNTS;
 
         bool mode_changed =
             mode_position != activity_mode_position;
 
         if (steering != 0.0f ||
             throttle != 0.0f ||
-            pivot_expo_changed ||
+            throttle_expo_changed ||
             mode_changed) {
 
             last_activity_us = now;
 
-            if (pivot_expo_changed) {
-                activity_pivot_expo_raw = pivot_expo_raw;
+            if (throttle_expo_changed) {
+                activity_throttle_expo_raw = throttle_expo_raw;
             }
 
             if (mode_changed) {
@@ -1251,7 +1335,7 @@ static void transmitter_task(void *arg)
                 TX_SLEEP_POLL_MS,
                 steering_sample.angle,
                 throttle_sample.angle,
-                pivot_expo_raw,
+                throttle_expo_raw,
                 mode_position
             );
         }
@@ -1429,7 +1513,7 @@ static void transmitter_init(void)
             rc_as5048b_read_throttle(&throttle_sample)
         );
 
-        int pivot_expo_raw = adc_read_channel(pivot_expo_channel);
+        int throttle_expo_raw = adc_read_channel(throttle_expo_channel);
         int mode_position =
             mode_switch_position_from_raw(
                 adc_read_channel(mode_switch_channel)
@@ -1438,7 +1522,7 @@ static void transmitter_init(void)
         if (!controls_moved_since_sleep(
                 steering_sample.angle,
                 throttle_sample.angle,
-                pivot_expo_raw,
+                throttle_expo_raw,
                 mode_position)) {
 
             enter_timed_sleep(
@@ -1446,7 +1530,7 @@ static void transmitter_init(void)
                 TX_SLEEP_POLL_MS,
                 rtc_steering_raw,
                 rtc_throttle_raw,
-                rtc_pivot_expo_raw,
+                rtc_throttle_expo_raw,
                 rtc_mode_position
             );
         }
