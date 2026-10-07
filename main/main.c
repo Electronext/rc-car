@@ -2682,6 +2682,7 @@ static void rx_status_task(void *arg)
 
                 rx_shutdown_pending = true;
                 motors_stop();
+                vehicle_lights_off();
 
                 rx_enter_sleep(
                     RX_SLEEP_DISCONNECTED,
@@ -2807,7 +2808,18 @@ static void receiver_init(void)
         MOTOR_R_REV_GPIO
     );
 
+    pwm_channel_init(
+        PWM_HEADLIGHTS,
+        HEADLIGHT_GPIO
+    );
+
+    pwm_channel_init(
+        PWM_TAIL_LIGHTS,
+        TAIL_LIGHT_GPIO
+    );
+
     motors_stop();
+    vehicle_lights_off();
 
     packet_queue = xQueueCreate(
         1,
@@ -2922,7 +2934,10 @@ static void receiver_motor_pins_safe_early(void)
         (1ULL << MOTOR_L_FWD_GPIO) |
         (1ULL << MOTOR_L_REV_GPIO) |
         (1ULL << MOTOR_R_FWD_GPIO) |
-        (1ULL << MOTOR_R_REV_GPIO);
+        (1ULL << MOTOR_R_REV_GPIO) |
+        (1ULL << HEADLIGHT_GPIO) |
+        (1ULL << TAIL_LIGHT_GPIO) |
+        (1ULL << REVERSE_LIGHT_GPIO);
 
     /*
      * Preload the output latches LOW before enabling output drive.
@@ -2933,6 +2948,12 @@ static void receiver_motor_pins_safe_early(void)
     gpio_set_level(MOTOR_L_REV_GPIO, 0);
     gpio_set_level(MOTOR_R_FWD_GPIO, 0);
     gpio_set_level(MOTOR_R_REV_GPIO, 0);
+    gpio_set_level(HEADLIGHT_GPIO, 0);
+    gpio_set_level(TAIL_LIGHT_GPIO, 0);
+    gpio_set_level(REVERSE_LIGHT_GPIO, 0);
+    gpio_set_level(HEADLIGHT_GPIO, 0);
+    gpio_set_level(TAIL_LIGHT_GPIO, 0);
+    gpio_set_level(REVERSE_LIGHT_GPIO, 0);
 
     gpio_config_t cfg = {
         .pin_bit_mask = motor_mask,
@@ -2960,8 +2981,8 @@ void app_main(void)
 {
 #if !RC_TRANSMITTER
     /*
-     * Put the H-bridge inputs into their safe state before NVS,
-     * Wi-Fi, queues, PWM or any other application initialisation.
+     * Put the H-bridge and vehicle-light outputs into their safe state
+     * before NVS, Wi-Fi, queues, PWM or other initialisation.
      */
     receiver_motor_pins_safe_early();
 #endif
