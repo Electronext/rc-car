@@ -1872,8 +1872,8 @@ static void rx_low_battery_warning_and_sleep(int battery_mv,
 }
 
 /*
- * Four LEDC channels correspond directly to the four SA8302
- * inputs.
+ * LEDC channels 0..3 drive the four SA8302 inputs.
+ * Channels 4..5 provide dimmable head/tail lighting.
  */
 enum {
     PWM_L_FWD = LEDC_CHANNEL_0,
