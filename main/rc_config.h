@@ -183,10 +183,13 @@
 #define MOTOR_R_FWD_GPIO        0   // INC
 #define MOTOR_R_REV_GPIO        7   // IND
 
-// Temporary RX bench characterization. When enabled, the receiver does
-// not start ESP-NOW; with the wheels lifted it repeatedly sweeps one motor
-// while holding the other at 50% logical demand.
-#define RX_MOTOR_RESPONSE_TEST   1
+// Temporary end-to-end motor response characterization.
+// RX remains in its normal radio/control path and reports actual PWM
+// through the heartbeat. TX sends a repeatable left/right demand sweep.
+#define RX_MOTOR_RESPONSE_TEST   0
+#define TX_MOTOR_RESPONSE_TEST   1
+#define MOTOR_RESPONSE_TEST_STEP_MS   2000
+#define MOTOR_RESPONSE_TEST_PAUSE_MS  3000
 
 // Motor PWM. Logical demand is remapped over the usable motor range:
 // a stopped/reversing motor gets a short 25% start boost, then running

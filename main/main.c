@@ -57,6 +57,8 @@ typedef struct __attribute__((packed)) {
     uint32_t failsafe_count;
     uint32_t sequence_skips;
     uint32_t max_control_gap_ms;
+    int16_t left_pwm_permille;
+    int16_t right_pwm_permille;
     uint8_t flags;      // bit 0 charging, bit 1 external power present
 } rc_heartbeat_t;
 
@@ -274,6 +276,8 @@ static volatile int last_heartbeat_control_rssi = 0;
 static volatile uint32_t last_heartbeat_failsafe_count = 0;
 static volatile uint32_t last_heartbeat_sequence_skips = 0;
 static volatile uint32_t last_heartbeat_max_control_gap_ms = 0;
+static volatile int16_t last_heartbeat_left_pwm_permille = 0;
+static volatile int16_t last_heartbeat_right_pwm_permille = 0;
 
 /* ESP-NOW link diagnostics (TX perspective). */
 static volatile uint32_t tx_mac_send_ok = 0;
@@ -850,6 +854,8 @@ static void tx_recv_cb(const esp_now_recv_info_t *info,
     last_heartbeat_failsafe_count = heartbeat.failsafe_count;
     last_heartbeat_sequence_skips = heartbeat.sequence_skips;
     last_heartbeat_max_control_gap_ms = heartbeat.max_control_gap_ms;
+    last_heartbeat_left_pwm_permille = heartbeat.left_pwm_permille;
+    last_heartbeat_right_pwm_permille = heartbeat.right_pwm_permille;
     last_heartbeat_us = esp_timer_get_time();
     tx_heartbeat_rx_count++;
 
@@ -901,6 +907,72 @@ static void status_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
+
+
+#if TX_MOTOR_RESPONSE_TEST
+static void tx_motor_response_test_demands(int64_t now_us,
+                                           float *left,
+                                           float *right,
+                                           const char **phase,
+                                           int *step)
+{
+    static const float stepped[] = {
+        0.50f, 0.40f, 0.30f, 0.20f, 0.15f,
+        0.10f, 0.05f, 0.02f, 0.00f
+    };
+
+    const int step_count =
+        (int)(sizeof(stepped) / sizeof(stepped[0]));
+
+    const int64_t pause_us =
+        (int64_t)MOTOR_RESPONSE_TEST_PAUSE_MS * 1000LL;
+    const int64_t step_us =
+        (int64_t)MOTOR_RESPONSE_TEST_STEP_MS * 1000LL;
+    const int64_t sweep_us =
+        (int64_t)step_count * step_us;
+    const int64_t cycle_us =
+        pause_us + sweep_us + pause_us + sweep_us + pause_us;
+
+    int64_t pos = now_us % cycle_us;
+
+    *left = 0.0f;
+    *right = 0.0f;
+    *phase = "PAUSE";
+    *step = -1;
+
+    if (pos < pause_us) {
+        return;
+    }
+
+    pos -= pause_us;
+
+    if (pos < sweep_us) {
+        int i = (int)(pos / step_us);
+        *left = 0.50f;
+        *right = stepped[i];
+        *phase = "A";
+        *step = i;
+        return;
+    }
+
+    pos -= sweep_us;
+
+    if (pos < pause_us) {
+        return;
+    }
+
+    pos -= pause_us;
+
+    if (pos < sweep_us) {
+        int i = (int)(pos / step_us);
+        *left = stepped[i];
+        *right = 0.50f;
+        *phase = "B";
+        *step = i;
+        return;
+    }
+}
+#endif
 
 
 static void transmitter_task(void *arg)
@@ -957,6 +1029,8 @@ static void transmitter_task(void *arg)
         float throttle = 0.0f;
         float left = 0.0f;
         float right = 0.0f;
+        const char *test_phase = "-";
+        int test_step = -1;
         float throttle_expo = expo_amount_from_raw(speed_raw);
         float steering_expo =
             throttle_expo * STEERING_EXPO_MULTIPLIER;
@@ -1080,13 +1154,29 @@ static void transmitter_task(void *arg)
             pivot_to_drive_blending = false;
         }
 
+#if TX_MOTOR_RESPONSE_TEST
+        tx_motor_response_test_demands(
+            esp_timer_get_time(),
+            &left,
+            &right,
+            &test_phase,
+            &test_step
+        );
+
+        last_activity_us = esp_timer_get_time();
+#endif
+
         packet.left =
             (int16_t)lroundf(left * 1000.0f);
         packet.right =
             (int16_t)lroundf(right * 1000.0f);
         packet.speed =
             (uint16_t)lroundf(speed * 1000.0f);
+#if TX_MOTOR_RESPONSE_TEST
+        packet.flags = 0;
+#else
         packet.flags = controls_valid ? 0 : 1;
+#endif
 
         if (!espnow_send_pending) {
             uint16_t previous_sequence = packet.sequence;
@@ -1213,9 +1303,9 @@ static void transmitter_task(void *arg)
             ESP_LOGI(
                 TAG,
                 "steer=%+.3f throttle=%+.3f expoT/S=%.2f/%.2f speed=%.2f | "
-                "L=%+.3f R=%+.3f | mode=%d mix=%s%s | "
+                "L=%+.3f R=%+.3f | mode=%d mix=%s%s test=%s%d | "
                 "link=%s hbSeq=%u age=%lldms hbRSSI=%s%d ctrlRSSI=%d "
-                "rxVBAT=%.3fV fs=%lu skips=%lu gapMax=%lums | "
+                "rxPWM=%+.3f/%+.3f rxVBAT=%.3fV fs=%lu skips=%lu gapMax=%lums | "
                 "tx=%lu/%lu submitErr=%lu deferred=%lu hbRx=%lu | "
                 "cb=%lu/%lums >40/100/250=%lu/%lu/%lu",
                 steering,
@@ -1228,12 +1318,16 @@ static void transmitter_task(void *arg)
                 mode_position,
                 steering_mode_name(steering_mode),
                 pivot_to_drive_blending ? "/BLEND" : "",
+                test_phase,
+                test_step,
                 linked ? "OK" : "WAIT",
                 (unsigned)last_heartbeat_sequence,
                 (long long)heartbeat_age_ms,
                 tx_heartbeat_rssi_valid ? "" : "?",
                 tx_heartbeat_rssi_valid ? tx_heartbeat_rssi : 0,
                 last_heartbeat_control_rssi,
+                last_heartbeat_left_pwm_permille / 1000.0f,
+                last_heartbeat_right_pwm_permille / 1000.0f,
                 last_heartbeat_battery_mv / 1000.0f,
                 (unsigned long)last_heartbeat_failsafe_count,
                 (unsigned long)last_heartbeat_sequence_skips,
@@ -1699,6 +1793,7 @@ enum {
 typedef struct {
     int8_t direction;
     int64_t boost_until_us;
+    int16_t applied_pwm_permille;
 } motor_state_t;
 
 static motor_state_t left_motor_state = {0};
@@ -1721,8 +1816,10 @@ static void motors_stop(void)
 
     left_motor_state.direction = 0;
     left_motor_state.boost_until_us = 0;
+    left_motor_state.applied_pwm_permille = 0;
     right_motor_state.direction = 0;
     right_motor_state.boost_until_us = 0;
+    right_motor_state.applied_pwm_permille = 0;
 }
 
 
@@ -1736,6 +1833,7 @@ static uint32_t motor_duty_from_demand(int16_t demand,
     if (direction == 0) {
         state->direction = 0;
         state->boost_until_us = 0;
+        state->applied_pwm_permille = 0;
         return 0;
     }
 
@@ -1801,6 +1899,19 @@ static void set_one_motor(int16_t demand,
     uint32_t duty =
         motor_duty_from_demand(demand, state);
 
+    int pwm_permille =
+        (int)lroundf(
+            ((float)duty * 1000.0f) /
+            (float)MOTOR_PWM_MAX
+        );
+
+    state->applied_pwm_permille =
+        (int16_t)(
+            demand < 0
+                ? -pwm_permille
+                : pwm_permille
+        );
+
     /*
      * Always turn the opposite bridge input OFF before applying PWM
      * to the desired direction.
@@ -1837,114 +1948,7 @@ static void set_motors(int16_t left, int16_t right)
 }
 
 
-#if RX_MOTOR_RESPONSE_TEST
-static float motor_nominal_run_duty_fraction(int16_t demand)
-{
-    if (demand == 0) {
-        return 0.0f;
-    }
 
-    float command =
-        (float)abs(demand) / 1000.0f;
-
-    if (command > 1.0f) {
-        command = 1.0f;
-    }
-
-    return
-        MOTOR_PWM_RUN_MIN +
-        command * (1.0f - MOTOR_PWM_RUN_MIN);
-}
-
-
-static void motor_response_test_task(void *arg)
-{
-    (void)arg;
-
-    static const int16_t stepped_demands[] = {
-        500, 400, 300, 200, 150, 100, 50, 20, 0
-    };
-
-    const int16_t fixed_demand = 500;
-    const int step_ms = 2000;
-    const int pause_ms = 2000;
-
-    ESP_LOGW(
-        TAG,
-        "RX MOTOR RESPONSE TEST ACTIVE - keep wheels off the ground"
-    );
-    ESP_LOGI(
-        TAG,
-        "Fixed logical demand=%+.3f, nominal PWM=%.1f%%",
-        fixed_demand / 1000.0f,
-        motor_nominal_run_duty_fraction(fixed_demand) * 100.0f
-    );
-
-    vTaskDelay(pdMS_TO_TICKS(3000));
-
-    while (1) {
-        ESP_LOGI(
-            TAG,
-            "TEST A: LEFT fixed, RIGHT stepped"
-        );
-
-        for (size_t i = 0;
-             i < sizeof(stepped_demands) / sizeof(stepped_demands[0]);
-             i++) {
-
-            int16_t right = stepped_demands[i];
-
-            set_motors(fixed_demand, right);
-
-            ESP_LOGI(
-                TAG,
-                "TEST A L=%+.3f pwm=%.1f%% | "
-                "R=%+.3f pwm=%.1f%%",
-                fixed_demand / 1000.0f,
-                motor_nominal_run_duty_fraction(fixed_demand) * 100.0f,
-                right / 1000.0f,
-                motor_nominal_run_duty_fraction(right) * 100.0f
-            );
-
-            vTaskDelay(pdMS_TO_TICKS(step_ms));
-        }
-
-        motors_stop();
-        ESP_LOGI(TAG, "TEST pause");
-        vTaskDelay(pdMS_TO_TICKS(pause_ms));
-
-        ESP_LOGI(
-            TAG,
-            "TEST B: RIGHT fixed, LEFT stepped"
-        );
-
-        for (size_t i = 0;
-             i < sizeof(stepped_demands) / sizeof(stepped_demands[0]);
-             i++) {
-
-            int16_t left = stepped_demands[i];
-
-            set_motors(left, fixed_demand);
-
-            ESP_LOGI(
-                TAG,
-                "TEST B L=%+.3f pwm=%.1f%% | "
-                "R=%+.3f pwm=%.1f%%",
-                left / 1000.0f,
-                motor_nominal_run_duty_fraction(left) * 100.0f,
-                fixed_demand / 1000.0f,
-                motor_nominal_run_duty_fraction(fixed_demand) * 100.0f
-            );
-
-            vTaskDelay(pdMS_TO_TICKS(step_ms));
-        }
-
-        motors_stop();
-        ESP_LOGI(TAG, "TEST cycle complete; restarting in %d ms", pause_ms);
-        vTaskDelay(pdMS_TO_TICKS(pause_ms));
-    }
-}
-#endif
 
 
 static void rx_heartbeat_send_cb(const wifi_tx_info_t *tx_info,
@@ -2129,6 +2133,10 @@ static void rx_heartbeat_task(void *arg)
             .failsafe_count = rx_failsafe_count,
             .sequence_skips = rx_sequence_skips,
             .max_control_gap_ms = rx_max_packet_gap_ever_ms,
+            .left_pwm_permille =
+                left_motor_state.applied_pwm_permille,
+            .right_pwm_permille =
+                right_motor_state.applied_pwm_permille,
             .flags =
                 (is_charging() ? 0x01U : 0U) |
                 (external_power_present() ? 0x02U : 0U)
@@ -2518,25 +2526,6 @@ static void receiver_init(void)
     );
 
     motors_stop();
-
-#if RX_MOTOR_RESPONSE_TEST
-    ESP_LOGW(
-        TAG,
-        "Skipping ESP-NOW/control tasks for RX motor response test"
-    );
-
-    xTaskCreate(
-        motor_response_test_task,
-        "motor_test",
-        3072,
-        NULL,
-        5,
-        NULL
-    );
-
-    return;
-#endif
-
 
     packet_queue = xQueueCreate(
         1,
