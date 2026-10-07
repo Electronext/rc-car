@@ -489,11 +489,11 @@ static float throttle_from_raw(uint16_t raw)
     if (raw < THROTTLE_NEUTRAL_LOW) {
         value =
             (float)(THROTTLE_NEUTRAL_LOW - raw) /
-            (float)THROTTLE_COUNTS_PER_UNIT;
+            (float)(THROTTLE_NEUTRAL_LOW - THROTTLE_RAW_FORWARD);
     } else if (raw > THROTTLE_NEUTRAL_HIGH) {
         value =
             -(float)(raw - THROTTLE_NEUTRAL_HIGH) /
-            (float)THROTTLE_COUNTS_PER_UNIT;
+            (float)(THROTTLE_RAW_REVERSE - THROTTLE_NEUTRAL_HIGH);
     } else {
         value = 0.0f;
     }
