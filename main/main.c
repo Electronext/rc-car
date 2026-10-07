@@ -1964,7 +1964,7 @@ static void vehicle_lights_update(int16_t left,
     pwm_set(
         PWM_REVERSE_LIGHT,
         reverse
-            ? vehicle_light_duty(VEHICLE_LIGHT_BRIGHT_LEVEL)
+            ? vehicle_light_duty(VEHICLE_LIGHT_DIM_LEVEL)
             : 0
     );
 }
