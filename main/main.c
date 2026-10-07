@@ -1251,6 +1251,10 @@ static int64_t rx_last_log_us = 0;
 /* ESP-NOW link diagnostics (RX perspective). */
 static volatile int rx_control_rssi = 0;
 static volatile bool rx_control_rssi_valid = false;
+static volatile int rx_control_rssi_interval_min = 0;
+static volatile bool rx_control_rssi_interval_min_valid = false;
+static volatile uint32_t rx_max_packet_gap_ms = 0;
+static volatile uint32_t rx_failsafe_count = 0;
 static uint16_t rx_last_sequence = 0;
 static bool rx_sequence_valid = false;
 static uint32_t rx_sequence_skips = 0;
@@ -1658,8 +1662,17 @@ static void recv_cb(const esp_now_recv_info_t *info,
     }
 
     if (info->rx_ctrl != NULL) {
-        rx_control_rssi = info->rx_ctrl->rssi;
+        int rssi = info->rx_ctrl->rssi;
+
+        rx_control_rssi = rssi;
         rx_control_rssi_valid = true;
+
+        if (!rx_control_rssi_interval_min_valid ||
+            rssi < rx_control_rssi_interval_min) {
+
+            rx_control_rssi_interval_min = rssi;
+            rx_control_rssi_interval_min_valid = true;
+        }
     }
 
     if (rx_sequence_valid) {
@@ -1673,7 +1686,19 @@ static void recv_cb(const esp_now_recv_info_t *info,
     rx_last_sequence = packet.sequence;
     rx_sequence_valid = true;
 
-    last_packet_us = esp_timer_get_time();
+    int64_t now = esp_timer_get_time();
+    int64_t previous_packet_us = last_packet_us;
+
+    if (previous_packet_us != 0) {
+        uint32_t gap_ms =
+            (uint32_t)((now - previous_packet_us) / 1000LL);
+
+        if (gap_ms > rx_max_packet_gap_ms) {
+            rx_max_packet_gap_ms = gap_ms;
+        }
+    }
+
+    last_packet_us = now;
 
     /*
      * Don't do motor peripheral work in the WiFi callback.
@@ -1682,8 +1707,6 @@ static void recv_cb(const esp_now_recv_info_t *info,
     xQueueOverwrite(packet_queue, &packet);
 
     rx_packet_count++;
-
-    int64_t now = esp_timer_get_time();
 
     if ((now - rx_last_log_us) >= 200000) {   // 200 ms = 5 Hz
         rx_last_log_us = now;
@@ -1766,6 +1789,8 @@ static void motor_task(void *arg)
             (now - last_packet_us) > ((int64_t)RC_FAILSAFE_MS * 1000)) {
 
             if (!rx_failsafe_active) {
+                rx_failsafe_count++;
+
                 ESP_LOGW(TAG, "RX FAILSAFE - no packet for %d ms",
                         RC_FAILSAFE_MS);
                 rx_failsafe_active = true;
@@ -1789,6 +1814,12 @@ static void rx_status_task(void *arg)
     int64_t now = esp_timer_get_time();
     int64_t last_battery_read_us = now;
     int64_t disconnected_since_us = now;
+    int64_t last_link_diag_us = now;
+
+    uint32_t last_sequence_skips = rx_sequence_skips;
+    uint32_t last_failsafe_count = rx_failsafe_count;
+    uint32_t last_ack_mac_fail = rx_ack_mac_fail;
+    uint32_t last_ack_submit_err = rx_ack_submit_err;
 
     while (1) {
         now = esp_timer_get_time();
@@ -1822,6 +1853,80 @@ static void rx_status_task(void *arg)
                 charging,
                 rx_packet_count
             );
+        }
+
+        if ((now - last_link_diag_us) >=
+            ((int64_t)RX_LINK_DIAG_INTERVAL_MS * 1000LL)) {
+
+            uint32_t sequence_skips = rx_sequence_skips;
+            uint32_t failsafe_count = rx_failsafe_count;
+            uint32_t ack_mac_fail = rx_ack_mac_fail;
+            uint32_t ack_submit_err = rx_ack_submit_err;
+
+            uint32_t sequence_skips_delta =
+                sequence_skips - last_sequence_skips;
+            uint32_t failsafe_delta =
+                failsafe_count - last_failsafe_count;
+            uint32_t ack_mac_fail_delta =
+                ack_mac_fail - last_ack_mac_fail;
+            uint32_t ack_submit_err_delta =
+                ack_submit_err - last_ack_submit_err;
+
+            uint32_t max_gap_ms = rx_max_packet_gap_ms;
+
+            if (last_packet_us != 0) {
+                uint32_t current_gap_ms =
+                    (uint32_t)((now - last_packet_us) / 1000LL);
+
+                if (current_gap_ms > max_gap_ms) {
+                    max_gap_ms = current_gap_ms;
+                }
+            }
+
+            bool anomaly =
+                sequence_skips_delta != 0 ||
+                failsafe_delta != 0 ||
+                ack_mac_fail_delta != 0 ||
+                ack_submit_err_delta != 0;
+
+            if (anomaly) {
+                reset_diag_record_link_summary(
+                    battery_mv,
+                    rx_control_rssi,
+                    rx_control_rssi_interval_min,
+                    rx_control_rssi_valid &&
+                        rx_control_rssi_interval_min_valid,
+                    max_gap_ms,
+                    rx_last_sequence,
+                    rx_packet_count,
+                    sequence_skips,
+                    sequence_skips_delta,
+                    failsafe_count,
+                    failsafe_delta,
+                    rx_ack_mac_ok,
+                    ack_mac_fail,
+                    ack_mac_fail_delta,
+                    ack_submit_err,
+                    ack_submit_err_delta
+                );
+            }
+
+            last_sequence_skips = sequence_skips;
+            last_failsafe_count = failsafe_count;
+            last_ack_mac_fail = ack_mac_fail;
+            last_ack_submit_err = ack_submit_err;
+
+            rx_max_packet_gap_ms = 0;
+
+            if (rx_control_rssi_valid) {
+                rx_control_rssi_interval_min = rx_control_rssi;
+                rx_control_rssi_interval_min_valid = true;
+            } else {
+                rx_control_rssi_interval_min = 0;
+                rx_control_rssi_interval_min_valid = false;
+            }
+
+            last_link_diag_us = now;
         }
 
         if (linked) {
