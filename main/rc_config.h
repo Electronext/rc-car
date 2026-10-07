@@ -46,20 +46,21 @@
 #define BATTERY_DIVIDER_TOP_OHMS       100000
 #define BATTERY_DIVIDER_BOTTOM_OHMS    100000
 
-// Curvature-shape calibration pot:
+// Curvature calibration pot:
 // 3.3V -> 330R -> 1k linear pot -> GND, wiper to CURVATURE_POT_GPIO.
-// During steering calibration it varies a continuously from 0..1 in:
+// During steering calibration it varies exponent g continuously in:
 //
-//     k = |s| + a*|s|*(1-|s|)
+//     k = 1 - (1 - |s|)^g
 //
-// a=0 gives the original linear-curvature mapping. a=1 is the strongest
-// monotonic shaping that still reaches k=1 only at full steering.
+// g=1 gives linear curvature; larger values give progressively stronger
+// steering while remaining smooth and monotonic.
 #define CURVATURE_POT_SERIES_OHMS      330
 #define CURVATURE_POT_OHMS             1000
 #define CURVATURE_POT_ADC_MIN            4
 #define CURVATURE_POT_ADC_MAX         3385
 #define CURVATURE_POT_INVERT             0
-#define CURVATURE_SHAPE_MAX            1.00f
+#define CURVATURE_EXPONENT_MIN         1.00f
+#define CURVATURE_EXPONENT_MAX         5.00f
 
 // Three-way switch selects exact expo for both steering and throttle.
 // Motor speed ceiling is fixed at 100% during this calibration.
