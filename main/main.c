@@ -1924,9 +1924,15 @@ static void vehicle_lights_off(void)
 
 static void vehicle_lights_update(int16_t left,
                                   int16_t right,
-                                  bool linked)
+                                  bool linked,
+                                  bool external_power)
 {
-    if (!linked) {
+    /*
+     * Keep the decorative lights off whenever USB is present, not just
+     * while !CHG is asserted. This keeps their regulator load on the
+     * LiPo side only (<= 4.2 V input to the 3.3 V LDO).
+     */
+    if (!linked || external_power) {
         vehicle_lights_off();
         return;
     }
@@ -2500,7 +2506,8 @@ static void motor_task(void *arg)
             vehicle_lights_update(
                 current_left,
                 current_right,
-                true
+                true,
+                external_power_present()
             );
         }
     }
