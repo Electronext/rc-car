@@ -20,7 +20,7 @@
 // Role-specific controls / indicators.
 #if RC_TRANSMITTER
 #define BATTERY_GPIO            0
-#define CURVATURE_POT_GPIO      1   // curvature-shape calibration pot
+#define PIVOT_EXPO_POT_GPIO     1   // pivot expo calibration pot
 #define STATUS_LED_GPIO         3
 #define MODE_SWITCH_GPIO        4   // 3-way expo selector
 #define CHARGE_STATUS_GPIO      5
@@ -46,24 +46,27 @@
 #define BATTERY_DIVIDER_TOP_OHMS       100000
 #define BATTERY_DIVIDER_BOTTOM_OHMS    100000
 
-// Curvature calibration pot:
-// 3.3V -> 330R -> 1k linear pot -> GND, wiper to CURVATURE_POT_GPIO.
-// During steering calibration it varies exponent g continuously in:
+// Pivot-expo calibration pot:
+// 3.3V -> 330R -> 1k linear pot -> GND, wiper to PIVOT_EXPO_POT_GPIO.
+// Pivot uses an independent power-law steering curve:
 //
-//     k = 1 - (1 - |s|)^g
+//     pivot = sign(s_raw) * |s_raw|^p
 //
-// g=1 gives linear curvature; larger values give progressively stronger
-// steering while remaining smooth and monotonic.
-#define CURVATURE_POT_SERIES_OHMS      330
-#define CURVATURE_POT_OHMS             1000
-#define CURVATURE_POT_ADC_MIN            4
-#define CURVATURE_POT_ADC_MAX         3385
-#define CURVATURE_POT_INVERT             0
-#define CURVATURE_EXPONENT_MIN         1.00f
-#define CURVATURE_EXPONENT_MAX         5.00f
+// p=1 is linear; larger values give progressively stronger centre
+// softening. The deliberately wide 1..20 range is for calibration.
+#define PIVOT_EXPO_POT_SERIES_OHMS     330
+#define PIVOT_EXPO_POT_OHMS            1000
+#define PIVOT_EXPO_POT_ADC_MIN           4
+#define PIVOT_EXPO_POT_ADC_MAX        3385
+#define PIVOT_EXPO_POT_INVERT            0
+#define PIVOT_EXPO_EXPONENT_MIN        1.00f
+#define PIVOT_EXPO_EXPONENT_MAX       20.00f
 
-// Three-way switch selects exact expo for both steering and throttle.
-// Motor speed ceiling is fixed at 100% during this calibration.
+// Drive curvature is now fixed at the experimentally preferred value.
+#define DRIVE_CURVATURE_EXPONENT       2.20f
+
+// Three-way switch selects exact expo for normal drive steering and
+// throttle. Pivot steering has its own independent exponent above.
 #define EXPO_LEVEL_LOW                 0.00f
 #define EXPO_LEVEL_MEDIUM              0.50f
 #define EXPO_LEVEL_HIGH                1.00f
@@ -154,7 +157,7 @@
 #define TX_SLEEP_POLL_MS               1000
 #define TX_WAKE_STEERING_COUNTS          80
 #define TX_WAKE_THROTTLE_COUNTS          80
-#define TX_WAKE_CURVATURE_COUNTS          20
+#define TX_WAKE_PIVOT_EXPO_COUNTS         20
 
 // ADC oneshot can transiently return ESP_ERR_TIMEOUT when the ADC
 // hardware is busy. Retry rather than treating that as a fatal error.
