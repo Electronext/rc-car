@@ -63,9 +63,14 @@
 #define SPEED_POT_ADC_MAX               3385
 #define SPEED_POT_INVERT                1
 
-// Maximum centre-softening at full CCW. Expo is a linear/cubic blend:
-// y = (1-e)*x + e*x^3. 0 = linear, 1 = pure cubic.
-#define CONTROL_EXPO_MAX               0.70f
+// Maximum throttle centre-softening at full CCW. Expo is a
+// linear/cubic blend: y = (1-e)*x + e*x^3.
+// 0 = linear, 1 = pure cubic.
+#define CONTROL_EXPO_MAX               1.00f
+
+// Steering needs more centre softening than throttle. Steering expo is
+// throttle expo multiplied by this factor, then clamped to 1.0.
+#define STEERING_EXPO_MULTIPLIER       1.30f
 
 // Three-way switch speed ceilings: LOW / CENTER / HIGH.
 #define SPEED_LEVEL_LOW                0.30f
