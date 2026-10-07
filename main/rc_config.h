@@ -4,15 +4,14 @@
 #define RC_TRANSMITTER          1
 
 // ESP-NOW
-#define RC_WIFI_CHANNEL         1
+#define RC_WIFI_CHANNEL         6
 #define RC_MAGIC                0x52434331UL   // "RCC1"
-#define RC_TX_PERIOD_MS         40             // 25 Hz
+#define RC_TX_PERIOD_MS         40             // 25 Hz control broadcast
 #define RC_FAILSAFE_MS          160            // four nominal control periods
-#define RC_APP_ACK_ENABLED      0              // diagnostic: RX remains radio-silent
-#define RC_ACK_PERIOD_MS        100            // used when application ACKs are enabled
-#define RC_ACK_DELAY_MS         10             // used when application ACKs are enabled
-#define RC_MAC_LINK_TIMEOUT_MS  250
-#define RC_APP_LINK_TIMEOUT_MS  500
+#define RC_HEARTBEAT_PERIOD_MS  200            // 5 Hz RX telemetry broadcast
+#define RC_HEARTBEAT_DELAY_MS   10             // send shortly after a control frame
+#define RC_HEARTBEAT_TIMEOUT_MS 500            // TX considers RX disconnected after this
+#define RC_MAC_LINK_TIMEOUT_MS  250            // diagnostic only: local TX callback age
 
 // Fixed STA MACs for the two ESP32-C3 boards.
 #define RC_TX_MAC_INIT          {0x88, 0x56, 0xA6, 0x58, 0x57, 0xF8}
@@ -132,11 +131,11 @@
 #define LOW_BATTERY_WARNING_MS       10000
 #define LOW_BATTERY_RECHECK_MS       60000
 
-// Link indication: solid battery colour while RX heartbeat is current;
+// Link indication: solid battery colour while the peer is current;
 // blink 300 ms on / 700 ms off while disconnected.
-// Overall link indication requires both recent TX->RX MAC delivery and
-// a recent RX->TX application heartbeat.
-#define RC_LINK_TIMEOUT_MS             RC_APP_LINK_TIMEOUT_MS
+// TX link state comes from the RX heartbeat; RX link state comes from
+// recently received control broadcasts.
+#define RC_LINK_TIMEOUT_MS             RC_HEARTBEAT_TIMEOUT_MS
 #define STATUS_LED_ON_MS               300
 #define STATUS_LED_OFF_MS              700
 #define STATUS_LED_BRIGHTNESS           48
