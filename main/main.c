@@ -1837,6 +1837,116 @@ static void set_motors(int16_t left, int16_t right)
 }
 
 
+static float motor_nominal_run_duty_fraction(int16_t demand)
+{
+    if (demand == 0) {
+        return 0.0f;
+    }
+
+    float command =
+        (float)abs(demand) / 1000.0f;
+
+    if (command > 1.0f) {
+        command = 1.0f;
+    }
+
+    return
+        MOTOR_PWM_RUN_MIN +
+        command * (1.0f - MOTOR_PWM_RUN_MIN);
+}
+
+
+#if RX_MOTOR_RESPONSE_TEST
+static void motor_response_test_task(void *arg)
+{
+    (void)arg;
+
+    static const int16_t stepped_demands[] = {
+        500, 400, 300, 200, 150, 100, 50, 20, 0
+    };
+
+    const int16_t fixed_demand = 500;
+    const int step_ms = 2000;
+    const int pause_ms = 2000;
+
+    ESP_LOGW(
+        TAG,
+        "RX MOTOR RESPONSE TEST ACTIVE - keep wheels off the ground"
+    );
+    ESP_LOGI(
+        TAG,
+        "Fixed logical demand=%+.3f, nominal PWM=%.1f%%",
+        fixed_demand / 1000.0f,
+        motor_nominal_run_duty_fraction(fixed_demand) * 100.0f
+    );
+
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    while (1) {
+        ESP_LOGI(
+            TAG,
+            "TEST A: LEFT fixed, RIGHT stepped"
+        );
+
+        for (size_t i = 0;
+             i < sizeof(stepped_demands) / sizeof(stepped_demands[0]);
+             i++) {
+
+            int16_t right = stepped_demands[i];
+
+            set_motors(fixed_demand, right);
+
+            ESP_LOGI(
+                TAG,
+                "TEST A L=%+.3f pwm=%.1f%% | "
+                "R=%+.3f pwm=%.1f%%",
+                fixed_demand / 1000.0f,
+                motor_nominal_run_duty_fraction(fixed_demand) * 100.0f,
+                right / 1000.0f,
+                motor_nominal_run_duty_fraction(right) * 100.0f
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(step_ms));
+        }
+
+        motors_stop();
+        ESP_LOGI(TAG, "TEST pause");
+        vTaskDelay(pdMS_TO_TICKS(pause_ms));
+
+        ESP_LOGI(
+            TAG,
+            "TEST B: RIGHT fixed, LEFT stepped"
+        );
+
+        for (size_t i = 0;
+             i < sizeof(stepped_demands) / sizeof(stepped_demands[0]);
+             i++) {
+
+            int16_t left = stepped_demands[i];
+
+            set_motors(left, fixed_demand);
+
+            ESP_LOGI(
+                TAG,
+                "TEST B L=%+.3f pwm=%.1f%% | "
+                "R=%+.3f pwm=%.1f%%",
+                left / 1000.0f,
+                motor_nominal_run_duty_fraction(left) * 100.0f,
+                fixed_demand / 1000.0f,
+                motor_nominal_run_duty_fraction(fixed_demand) * 100.0f
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(step_ms));
+        }
+
+        motors_stop();
+        ESP_LOGI(TAG, "TEST cycle complete; restarting in %d ms", pause_ms);
+        vTaskDelay(pdMS_TO_TICKS(pause_ms));
+    }
+}
+#endif
+
+
 static void rx_heartbeat_send_cb(const wifi_tx_info_t *tx_info,
                                  esp_now_send_status_t status)
 {
@@ -2408,6 +2518,24 @@ static void receiver_init(void)
     );
 
     motors_stop();
+
+#if RX_MOTOR_RESPONSE_TEST
+    ESP_LOGW(
+        TAG,
+        "Skipping ESP-NOW/control tasks for RX motor response test"
+    );
+
+    xTaskCreate(
+        motor_response_test_task,
+        "motor_test",
+        3072,
+        NULL,
+        5,
+        NULL
+    );
+
+    return;
+#endif
 
 
     packet_queue = xQueueCreate(
