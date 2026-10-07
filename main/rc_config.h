@@ -198,9 +198,10 @@
 // low-frequency pulse-density control at the threshold drive level.
 // This extends average wheel speed below the loaded continuous-running
 // floor while preserving the requested mean demand approximately.
-#define MOTOR_CHOPPER_MAX_COMMAND   0.15f
-#define MOTOR_CHOPPER_PERIOD_MS      100
-#define MOTOR_CONTROL_UPDATE_MS       10
+#define MOTOR_CHOPPER_MAX_COMMAND         0.15f
+#define MOTOR_PIVOT_CHOPPER_MAX_COMMAND   0.25f
+#define MOTOR_CHOPPER_PERIOD_MS            100
+#define MOTOR_CONTROL_UPDATE_MS             10
 
 // Set these after confirming physical direction.
 #define LEFT_INVERT             0
