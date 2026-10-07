@@ -71,6 +71,7 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     ESP_ERROR_CHECK(
         esp_wifi_set_channel(RC_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE)
@@ -259,6 +260,8 @@ static volatile uint16_t last_ack_sequence = 0;
 static volatile uint32_t tx_mac_send_ok = 0;
 static volatile uint32_t tx_mac_send_fail = 0;
 static volatile uint32_t tx_send_submit_err = 0;
+static volatile uint32_t tx_send_deferred = 0;
+static volatile int64_t last_tx_mac_success_us = 0;
 static volatile uint32_t tx_ack_rx_count = 0;
 static volatile int tx_ack_rssi = 0;
 static volatile bool tx_ack_rssi_valid = false;
@@ -733,6 +736,7 @@ static void send_cb(const wifi_tx_info_t *tx_info,
 
     if (status == ESP_NOW_SEND_SUCCESS) {
         tx_mac_send_ok++;
+        last_tx_mac_success_us = esp_timer_get_time();
     } else {
         tx_mac_send_fail++;
     }
@@ -893,7 +897,6 @@ static void transmitter_task(void *arg)
         left = apply_speed_limit(left, speed);
         right = apply_speed_limit(right, speed);
 
-        packet.sequence++;
         packet.left =
             (int16_t)lroundf(left * 1000.0f);
         packet.right =
@@ -903,6 +906,7 @@ static void transmitter_task(void *arg)
         packet.flags = controls_valid ? 0 : 1;
 
         if (!espnow_send_pending) {
+            packet.sequence++;
             espnow_send_pending = true;
 
             esp_err_t err = esp_now_send(
@@ -921,6 +925,8 @@ static void transmitter_task(void *arg)
                     esp_err_to_name(err)
                 );
             }
+        } else {
+            tx_send_deferred++;
         }
 
         int64_t now = esp_timer_get_time();
@@ -949,10 +955,17 @@ static void transmitter_task(void *arg)
 
         bool charging = is_charging();
 
-        bool linked =
+        bool rf_linked =
+            last_tx_mac_success_us != 0 &&
+            (now - last_tx_mac_success_us) <=
+                ((int64_t)RC_MAC_LINK_TIMEOUT_MS * 1000LL);
+
+        bool app_linked =
             last_ack_us != 0 &&
             (now - last_ack_us) <=
-                ((int64_t)RC_LINK_TIMEOUT_MS * 1000LL);
+                ((int64_t)RC_APP_LINK_TIMEOUT_MS * 1000LL);
+
+        bool linked = rf_linked && app_linked;
 
         if (charging || linked) {
             disconnected_since_us = 0;
@@ -1021,8 +1034,8 @@ static void transmitter_task(void *arg)
                 TAG,
                 "steer=%+.3f throttle=%+.3f expo=%.2f speed=%.2f | "
                 "L=%+.3f R=%+.3f | mode=%d frame=%s | "
-                "link=%s ack=%u age=%lldms rssi=%s%d | "
-                "txMAC=%lu/%lu submitErr=%lu ackRx=%lu",
+                "rf=%s app=%s ack=%u age=%lldms rssi=%s%d | "
+                "txMAC=%lu/%lu submitErr=%lu deferred=%lu ackRx=%lu",
                 steering,
                 throttle,
                 expo,
@@ -1031,7 +1044,8 @@ static void transmitter_task(void *arg)
                 right,
                 mode_position,
                 steering_frame > 0 ? "FWD" : "REV",
-                linked ? "OK" : "WAIT",
+                rf_linked ? "OK" : "WAIT",
+                app_linked ? "OK" : "WAIT",
                 (unsigned)last_ack_sequence,
                 (long long)ack_age_ms,
                 tx_ack_rssi_valid ? "" : "?",
@@ -1039,6 +1053,7 @@ static void transmitter_task(void *arg)
                 (unsigned long)tx_mac_send_ok,
                 (unsigned long)tx_mac_send_fail,
                 (unsigned long)tx_send_submit_err,
+                (unsigned long)tx_send_deferred,
                 (unsigned long)tx_ack_rx_count
             );
         }
@@ -1261,6 +1276,9 @@ static uint32_t rx_sequence_skips = 0;
 static volatile uint32_t rx_ack_mac_ok = 0;
 static volatile uint32_t rx_ack_mac_fail = 0;
 static volatile uint32_t rx_ack_submit_err = 0;
+static volatile bool rx_ack_send_pending = false;
+static volatile bool rx_ack_sequence_valid = false;
+static volatile uint16_t rx_ack_latest_sequence = 0;
 
 #define RX_RTC_MAGIC 0x52585231UL
 
@@ -1638,6 +1656,8 @@ static void rx_send_cb(const wifi_tx_info_t *tx_info,
     } else {
         rx_ack_mac_fail++;
     }
+
+    rx_ack_send_pending = false;
 }
 
 
@@ -1685,6 +1705,8 @@ static void recv_cb(const esp_now_recv_info_t *info,
 
     rx_last_sequence = packet.sequence;
     rx_sequence_valid = true;
+    rx_ack_latest_sequence = packet.sequence;
+    rx_ack_sequence_valid = true;
 
     int64_t now = esp_timer_get_time();
     int64_t previous_packet_us = last_packet_us;
@@ -1732,6 +1754,54 @@ static void recv_cb(const esp_now_recv_info_t *info,
 }
 
 
+static void rx_ack_task(void *arg)
+{
+    (void)arg;
+
+    TickType_t last_wake = xTaskGetTickCount();
+
+    while (1) {
+        vTaskDelayUntil(
+            &last_wake,
+            pdMS_TO_TICKS(RC_ACK_PERIOD_MS)
+        );
+
+        if (!rx_ack_sequence_valid || rx_shutdown_pending) {
+            continue;
+        }
+
+        if (rx_ack_send_pending) {
+            continue;
+        }
+
+        rc_ack_t ack = {
+            .magic = RC_MAGIC,
+            .sequence = rx_ack_latest_sequence,
+            .type = RC_MSG_ACK
+        };
+
+        rx_ack_send_pending = true;
+
+        esp_err_t ack_err = esp_now_send(
+            tx_mac,
+            (uint8_t *)&ack,
+            sizeof(ack)
+        );
+
+        if (ack_err != ESP_OK) {
+            rx_ack_send_pending = false;
+            rx_ack_submit_err++;
+
+            ESP_LOGW(
+                TAG,
+                "ACK heartbeat send failed: %s",
+                esp_err_to_name(ack_err)
+            );
+        }
+    }
+}
+
+
 static void motor_task(void *arg)
 {
     rc_packet_t packet;
@@ -1752,28 +1822,6 @@ static void motor_task(void *arg)
             }
 
             set_motors(packet.left, packet.right);
-
-            rc_ack_t ack = {
-                .magic = RC_MAGIC,
-                .sequence = packet.sequence,
-                .type = RC_MSG_ACK
-            };
-
-            esp_err_t ack_err = esp_now_send(
-                tx_mac,
-                (uint8_t *)&ack,
-                sizeof(ack)
-            );
-
-            if (ack_err != ESP_OK) {
-                rx_ack_submit_err++;
-
-                ESP_LOGW(
-                    TAG,
-                    "ACK send failed: %s",
-                    esp_err_to_name(ack_err)
-                );
-            }
 
             failsafe_active = false;
             if (rx_failsafe_active) {
@@ -2180,6 +2228,15 @@ static void receiver_init(void)
             RX_POLL_LISTEN_MS
         );
     }
+
+    xTaskCreate(
+        rx_ack_task,
+        "rx_ack",
+        3072,
+        NULL,
+        5,
+        NULL
+    );
 
     xTaskCreate(
         motor_task,
