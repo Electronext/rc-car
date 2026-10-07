@@ -81,6 +81,7 @@ static void wifi_init(void)
 
 static void charge_status_init(void)
 {
+#if CHARGE_STATUS_ENABLED
     gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << CHARGE_STATUS_GPIO,
         .mode = GPIO_MODE_INPUT,
@@ -90,6 +91,7 @@ static void charge_status_init(void)
     };
 
     ESP_ERROR_CHECK(gpio_config(&cfg));
+#endif
 
 #if !RC_TRANSMITTER
     gpio_config_t vusb_cfg = {
@@ -108,13 +110,12 @@ static void charge_status_init(void)
 static bool external_power_present(void)
 {
 #if RC_TRANSMITTER
-    /*
-     * TX does not yet have a dedicated VUSB-present input. For now
-     * preserve the existing behaviour and treat active !CHG as
-     * external power.
-     */
+#if CHARGE_STATUS_ENABLED
     return gpio_get_level(CHARGE_STATUS_GPIO) ==
            CHARGE_STATUS_ACTIVE_LEVEL;
+#else
+    return false;
+#endif
 #else
     return gpio_get_level(VUSB_PRESENT_GPIO) ==
            VUSB_PRESENT_ACTIVE_LEVEL;
@@ -124,6 +125,7 @@ static bool external_power_present(void)
 
 static bool is_charging(void)
 {
+#if CHARGE_STATUS_ENABLED
 #if RC_TRANSMITTER
     return gpio_get_level(CHARGE_STATUS_GPIO) ==
            CHARGE_STATUS_ACTIVE_LEVEL;
@@ -131,6 +133,9 @@ static bool is_charging(void)
     return external_power_present() &&
            gpio_get_level(CHARGE_STATUS_GPIO) ==
                CHARGE_STATUS_ACTIVE_LEVEL;
+#endif
+#else
+    return false;
 #endif
 }
 
@@ -657,12 +662,14 @@ static void enter_timed_sleep(uint8_t reason,
         )
     );
 
+#if CHARGE_STATUS_ENABLED
     ESP_ERROR_CHECK(
         esp_deep_sleep_enable_gpio_wakeup(
             1ULL << CHARGE_STATUS_GPIO,
             ESP_GPIO_WAKEUP_GPIO_LOW
         )
     );
+#endif
 
     esp_deep_sleep_start();
 }
