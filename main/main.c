@@ -1914,11 +1914,110 @@ static uint32_t vehicle_light_duty(float level)
 }
 
 
+static float headlight_level = HEADLIGHT_DIM_LEVEL;
+static int64_t headlight_hold_until_us = 0;
+static bool headlight_fade_active = false;
+static int64_t headlight_fade_start_us = 0;
+static float headlight_fade_from_level = HEADLIGHT_DIM_LEVEL;
+
+
+static void headlight_state_reset(void)
+{
+    headlight_level = HEADLIGHT_DIM_LEVEL;
+    headlight_hold_until_us = 0;
+    headlight_fade_active = false;
+    headlight_fade_start_us = 0;
+    headlight_fade_from_level = HEADLIGHT_DIM_LEVEL;
+}
+
+
+static float headlight_level_update(bool forward,
+                                    bool reverse,
+                                    int64_t now)
+{
+    if (forward) {
+        headlight_level = HEADLIGHT_BRIGHT_LEVEL;
+        headlight_hold_until_us =
+            now + (int64_t)HEADLIGHT_BRIGHT_HOLD_MS * 1000LL;
+        headlight_fade_active = false;
+        headlight_fade_start_us = 0;
+        headlight_fade_from_level = HEADLIGHT_BRIGHT_LEVEL;
+        return headlight_level;
+    }
+
+    bool start_fade = false;
+
+    if (reverse) {
+        /*
+         * Reverse cancels any remaining bright hold immediately.
+         * If the lamps are above dim, begin fading from their present
+         * level so a reversal during the hold looks natural.
+         */
+        headlight_hold_until_us = 0;
+
+        if (!headlight_fade_active &&
+            headlight_level > HEADLIGHT_DIM_LEVEL) {
+            start_fade = true;
+        }
+    } else if (headlight_hold_until_us != 0) {
+        if (now < headlight_hold_until_us) {
+            headlight_level = HEADLIGHT_BRIGHT_LEVEL;
+            return headlight_level;
+        }
+
+        headlight_hold_until_us = 0;
+
+        if (!headlight_fade_active &&
+            headlight_level > HEADLIGHT_DIM_LEVEL) {
+            start_fade = true;
+        }
+    }
+
+    if (start_fade) {
+        headlight_fade_active = true;
+        headlight_fade_start_us = now;
+        headlight_fade_from_level = headlight_level;
+    }
+
+    if (headlight_fade_active) {
+        int64_t fade_us =
+            (int64_t)HEADLIGHT_FADE_MS * 1000LL;
+
+        float fade =
+            fade_us <= 0
+                ? 1.0f
+                : (float)(now - headlight_fade_start_us) /
+                  (float)fade_us;
+
+        if (fade >= 1.0f) {
+            headlight_level = HEADLIGHT_DIM_LEVEL;
+            headlight_fade_active = false;
+            headlight_fade_start_us = 0;
+            headlight_fade_from_level = HEADLIGHT_DIM_LEVEL;
+        } else {
+            if (fade < 0.0f) {
+                fade = 0.0f;
+            }
+
+            headlight_level =
+                headlight_fade_from_level +
+                fade * (HEADLIGHT_DIM_LEVEL -
+                        headlight_fade_from_level);
+        }
+    } else if (headlight_level < HEADLIGHT_DIM_LEVEL) {
+        headlight_level = HEADLIGHT_DIM_LEVEL;
+    }
+
+    return headlight_level;
+}
+
+
 static void vehicle_lights_off(void)
 {
     pwm_set(PWM_HEADLIGHTS, 0);
     pwm_set(PWM_REVERSE_LIGHT, 0);
     gpio_set_level(TAIL_LIGHT_GPIO, 0);
+    headlight_state_reset();
 }
 
 
@@ -1947,9 +2046,11 @@ static void vehicle_lights_update(int16_t left,
         translation < 0;
 
     float head_level =
-        forward
-            ? HEADLIGHT_BRIGHT_LEVEL
-            : HEADLIGHT_DIM_LEVEL;
+        headlight_level_update(
+            forward,
+            reverse,
+            esp_timer_get_time()
+        );
 
     pwm_set(
         PWM_HEADLIGHTS,
