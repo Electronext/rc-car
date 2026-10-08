@@ -211,6 +211,8 @@
 // tail lights are binary full-on/full-off. Values are fractions of full PWM.
 #define HEADLIGHT_DIM_LEVEL       0.20f
 #define HEADLIGHT_BRIGHT_LEVEL    1.00f
+#define HEADLIGHT_BRIGHT_HOLD_MS   5000
+#define HEADLIGHT_FADE_MS            500
 
 #define REVERSE_LIGHT_DIM_LEVEL   0.50f
 //#define REVERSE_LIGHT_BRIGHT_LEVEL    1.00f
