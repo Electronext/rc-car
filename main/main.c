@@ -1987,6 +1987,82 @@ typedef struct {
 static motor_state_t left_motor_state = {0};
 static motor_state_t right_motor_state = {0};
 
+typedef struct {
+    int16_t held_command;
+    int64_t hold_until_us;
+} stupid_pulse_state_t;
+
+static stupid_pulse_state_t stupid_left_pulse = {0};
+static stupid_pulse_state_t stupid_right_pulse = {0};
+
+
+static void stupid_pulse_reset(void)
+{
+    stupid_left_pulse.held_command = 0;
+    stupid_left_pulse.hold_until_us = 0;
+    stupid_right_pulse.held_command = 0;
+    stupid_right_pulse.hold_until_us = 0;
+}
+
+
+static int16_t stupid_min_pulse_apply(int16_t requested,
+                                      stupid_pulse_state_t *state,
+                                      int64_t now)
+{
+    int requested_sign =
+        requested > 0 ? 1 :
+        requested < 0 ? -1 : 0;
+
+    int held_sign =
+        state->held_command > 0 ? 1 :
+        state->held_command < 0 ? -1 : 0;
+
+    if (requested_sign != 0) {
+        /*
+         * Starting from zero, or changing direction after the previous
+         * minimum pulse has completed, starts a fresh minimum pulse.
+         */
+        if (held_sign == 0 ||
+            (requested_sign != held_sign &&
+             now >= state->hold_until_us)) {
+
+            state->held_command = requested;
+            state->hold_until_us =
+                now + (int64_t)STUPID_MIN_PULSE_MS * 1000LL;
+
+            return requested;
+        }
+
+        /*
+         * A direction reversal requested during the minimum pulse has
+         * to wait; this mimics the sluggish original bang-bang control.
+         */
+        if (requested_sign != held_sign &&
+            now < state->hold_until_us) {
+            return state->held_command;
+        }
+
+        /*
+         * Same direction: allow the 70..100% magnitude to track the
+         * input, but preserve the original pulse expiry time.
+         */
+        state->held_command = requested;
+        return requested;
+    }
+
+    /*
+     * Releasing the control cannot terminate the pulse early.
+     */
+    if (held_sign != 0 &&
+        now < state->hold_until_us) {
+        return state->held_command;
+    }
+
+    state->held_command = 0;
+    state->hold_until_us = 0;
+    return 0;
+}
+
 
 static void pwm_set(ledc_channel_t channel, uint32_t duty)
 {
@@ -2180,6 +2256,8 @@ static void motors_stop(void)
     right_motor_state.chopper_active = false;
     right_motor_state.chopper_epoch_us = 0;
     right_motor_state.applied_pwm_permille = 0;
+
+    stupid_pulse_reset();
 }
 
 
@@ -2704,16 +2782,37 @@ static void motor_task(void *arg)
              * This allows low-speed chopper timing to run independently
              * of the 25 Hz ESP-NOW control packet rate.
              */
+            int16_t effective_left = current_left;
+            int16_t effective_right = current_right;
+
+            if (current_stupid_mode) {
+                effective_left =
+                    stupid_min_pulse_apply(
+                        current_left,
+                        &stupid_left_pulse,
+                        now
+                    );
+
+                effective_right =
+                    stupid_min_pulse_apply(
+                        current_right,
+                        &stupid_right_pulse,
+                        now
+                    );
+            } else {
+                stupid_pulse_reset();
+            }
+
             set_motors(
-                current_left,
-                current_right,
+                effective_left,
+                effective_right,
                 current_pivot_mode,
                 current_stupid_mode
             );
 
             vehicle_lights_update(
-                current_left,
-                current_right,
+                effective_left,
+                effective_right,
                 true,
                 external_power_present()
             );
