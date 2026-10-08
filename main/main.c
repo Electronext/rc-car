@@ -14,6 +14,7 @@
 #include "esp_wifi.h"
 #include "esp_now.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
 
@@ -110,7 +111,6 @@ static void charge_status_init(void)
     ESP_ERROR_CHECK(gpio_config(&cfg));
 #endif
 
-#if !RC_TRANSMITTER
     gpio_config_t vusb_cfg = {
         .pin_bit_mask = 1ULL << VUSB_PRESENT_GPIO,
         .mode = GPIO_MODE_INPUT,
@@ -120,39 +120,34 @@ static void charge_status_init(void)
     };
 
     ESP_ERROR_CHECK(gpio_config(&vusb_cfg));
-#endif
 }
 
 
 static bool external_power_present(void)
 {
-#if RC_TRANSMITTER
-#if CHARGE_STATUS_ENABLED
-    return gpio_get_level(CHARGE_STATUS_GPIO) ==
-           CHARGE_STATUS_ACTIVE_LEVEL;
-#else
-    return false;
-#endif
-#else
     return gpio_get_level(VUSB_PRESENT_GPIO) ==
            VUSB_PRESENT_ACTIVE_LEVEL;
-#endif
 }
 
 
 static bool is_charging(void)
 {
 #if CHARGE_STATUS_ENABLED
-#if RC_TRANSMITTER
-    return gpio_get_level(CHARGE_STATUS_GPIO) ==
-           CHARGE_STATUS_ACTIVE_LEVEL;
-#else
     return external_power_present() &&
            gpio_get_level(CHARGE_STATUS_GPIO) ==
                CHARGE_STATUS_ACTIVE_LEVEL;
-#endif
 #else
     return false;
+#endif
+}
+
+
+static bool vusb_lockout_enabled(void)
+{
+#if RC_TRANSMITTER
+    return TX_VUSB_LOCKOUT_ENABLED != 0;
+#else
+    return RX_VUSB_LOCKOUT_ENABLED != 0;
 #endif
 }
 
