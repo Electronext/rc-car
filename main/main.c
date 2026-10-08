@@ -1948,8 +1948,8 @@ static void vehicle_lights_update(int16_t left,
 
     float head_level =
         forward
-            ? VEHICLE_LIGHT_BRIGHT_LEVEL
-            : VEHICLE_LIGHT_DIM_LEVEL;
+            ? HEADLIGHT_BRIGHT_LEVEL
+            : HEADLIGHT_DIM_LEVEL;
 
     pwm_set(
         PWM_HEADLIGHTS,
@@ -1964,7 +1964,7 @@ static void vehicle_lights_update(int16_t left,
     pwm_set(
         PWM_REVERSE_LIGHT,
         reverse
-            ? vehicle_light_duty(VEHICLE_LIGHT_DIM_LEVEL)
+            ? vehicle_light_duty(REVERSE_LIGHT_DIM_LEVEL)
             : 0
     );
 }

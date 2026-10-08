@@ -209,5 +209,8 @@
 
 // Vehicle lighting on RX. Head/reverse use the two spare LEDC channels;
 // tail lights are binary full-on/full-off. Values are fractions of full PWM.
-#define VEHICLE_LIGHT_DIM_LEVEL       0.20f
-#define VEHICLE_LIGHT_BRIGHT_LEVEL    1.00f
+#define HEADLIGHT_DIM_LEVEL       0.20f
+#define HEADLIGHT_BRIGHT_LEVEL    1.00f
+
+#define REVERSE_LIGHT_DIM_LEVEL   0.50f
+//#define REVERSE_LIGHT_BRIGHT_LEVEL    1.00f
