@@ -142,6 +142,7 @@
 #define STATUS_LED_BRIGHTNESS          128   // ~50% global WS2812 cap
 #define STATUS_LED_SELF_TEST_MS         150
 #define CHARGE_BREATHE_PERIOD_MS       2000
+#define CHARGE_DONE_STABLE_MS            500
 #define DISCONNECTED_SLEEP_MS        120000
 #define RX_SLEEP_POLL_MS               5000
 #define RX_POLL_LISTEN_MS                750
