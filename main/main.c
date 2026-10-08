@@ -205,6 +205,85 @@ static uint8_t charging_breathe_blue(int64_t now_us)
 }
 
 
+static void charge_only_mode_if_needed(const char *role)
+{
+    if (!vusb_lockout_enabled() ||
+        !external_power_present()) {
+        return;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "%s VUSB present: entering charge-only mode",
+        role
+    );
+
+    int64_t charge_done_since_us = 0;
+
+    while (external_power_present()) {
+        int64_t now = esp_timer_get_time();
+
+        if (is_charging()) {
+            charge_done_since_us = 0;
+
+            status_led_set_rgb(
+                0,
+                0,
+                charging_breathe_blue(now)
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(25));
+            continue;
+        }
+
+        /*
+         * !CHG can briefly deassert while the charger settles. Require
+         * a stable completed state before latching solid blue + sleep.
+         */
+        if (charge_done_since_us == 0) {
+            charge_done_since_us = now;
+        }
+
+        if ((now - charge_done_since_us) <
+            ((int64_t)CHARGE_DONE_STABLE_MS * 1000LL)) {
+
+            status_led_set_rgb(
+                0,
+                0,
+                charging_breathe_blue(now)
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(25));
+            continue;
+        }
+
+        ESP_LOGI(TAG, "%s charging complete", role);
+
+        /*
+         * Leave the WS2812 latched solid blue, then sleep with no wake
+         * source configured. A power cycle is intentionally required.
+         */
+        status_led_set_rgb(0, 0, 255);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        esp_deep_sleep_start();
+    }
+
+    /*
+     * USB was removed before charge completion. Stay latched out of RC
+     * operation until the next power cycle.
+     */
+    ESP_LOGW(
+        TAG,
+        "%s VUSB removed during charge-only mode; sleeping until power cycle",
+        role
+    );
+
+    status_led_off();
+    vTaskDelay(pdMS_TO_TICKS(20));
+    esp_deep_sleep_start();
+}
+
+
 static void render_status_led(bool charging,
                               bool linked,
                               int battery_mv,
