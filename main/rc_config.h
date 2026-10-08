@@ -1,7 +1,7 @@
 #pragma once
 
 // Change to 0 for the car/receiver.
-#define RC_TRANSMITTER          1
+#define RC_TRANSMITTER          0
 
 // ESP-NOW
 #define RC_WIFI_CHANNEL         6
@@ -35,8 +35,8 @@
 #define CHARGE_STATUS_GPIO      4
 #define CHARGE_STATUS_ENABLED   1
 #define STATUS_LED_GPIO         8
-#define HEADLIGHT_GPIO          20
-#define REVERSE_LIGHT_GPIO      21
+#define HEADLIGHT_GPIO          21
+#define REVERSE_LIGHT_GPIO      20
 #define TAIL_LIGHT_GPIO          6
 #endif
 
