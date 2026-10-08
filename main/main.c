@@ -1071,6 +1071,18 @@ static void status_task(void *arg)
     while (1) {
         int64_t now = esp_timer_get_time();
 
+        if (vusb_lockout_enabled() &&
+            external_power_present()) {
+
+            ESP_LOGI(
+                TAG,
+                "TX VUSB inserted: rebooting into charge-only mode"
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(10));
+            esp_restart();
+        }
+
         if ((now - last_battery_read_us) >= 1000000LL) {
             battery_mv = read_battery_mv();
             last_battery_read_us = now;
@@ -1566,6 +1578,12 @@ static void transmitter_init(void)
     transmitter_adc_init();
     charge_status_init();
     status_led_init();
+
+    /*
+     * With VUSB lockout enabled, do not initialise controls, Wi-Fi or
+     * ESP-NOW while externally powered.
+     */
+    charge_only_mode_if_needed("TX");
 
     int battery_mv = read_battery_mv();
     bool charging = is_charging();
@@ -2630,6 +2648,27 @@ static void motor_task(void *arg)
 
         int64_t now = esp_timer_get_time();
 
+        if (vusb_lockout_enabled() &&
+            external_power_present()) {
+
+            /*
+             * VUSB directly powers the H-bridge rail. Remove every
+             * software drive immediately, then reboot into the boot-time
+             * charge-only path where Wi-Fi/ESP-NOW are never started.
+             */
+            rx_shutdown_pending = true;
+            motors_stop();
+            vehicle_lights_off();
+
+            ESP_LOGI(
+                TAG,
+                "RX VUSB inserted: motors off; rebooting into charge-only mode"
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(10));
+            esp_restart();
+        }
+
         if (rx_shutdown_pending) {
             motors_stop();
             vehicle_lights_off();
@@ -2899,6 +2938,12 @@ static void receiver_init(void)
     receiver_adc_init();
     charge_status_init();
     status_led_init();
+
+    /*
+     * This runs before LEDC motor setup and before Wi-Fi/ESP-NOW, so
+     * VUSB can never leave the H-bridge software-enabled on boot.
+     */
+    charge_only_mode_if_needed("RX");
 
     int battery_mv = rx_read_battery_mv();
     rx_latest_battery_mv = battery_mv;
