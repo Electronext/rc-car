@@ -34,68 +34,12 @@
 
 static const char *TAG = "RC";
 
-enum {
-    RC_MSG_CONTROL = 1,
-    RC_MSG_HEARTBEAT = 2
-};
-
-enum {
-    RC_CONTROL_FLAG_INVALID = 0x01U,
-    RC_CONTROL_FLAG_PIVOT = 0x02U,
-    RC_CONTROL_FLAG_STUPID = 0x04U
-};
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint16_t sequence;
-    uint8_t type;
-    int16_t left;       // -1000 ... +1000
-    int16_t right;      // -1000 ... +1000
-    uint16_t speed;     // 0 ... 1000
-    uint8_t flags;
-} rc_packet_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint16_t last_control_sequence;
-    uint8_t type;
-    uint16_t battery_mv;
-    int8_t control_rssi;
-    uint32_t failsafe_count;
-    uint32_t sequence_skips;
-    uint32_t max_control_gap_ms;
-    int16_t left_pwm_permille;
-    int16_t right_pwm_permille;
-    uint8_t flags;      // bit 0 charging, bit 1 external power present
-} rc_heartbeat_t;
-
-static const uint8_t broadcast_mac[ESP_NOW_ETH_ALEN] = {
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-};
-
+#include "rc_protocol.h"
+#include "rc_radio.h"
 
 /* ============================================================
  * Common WiFi / ESP-NOW
  * ============================================================ */
-
-static void wifi_init(void)
-{
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-
-    ESP_ERROR_CHECK(
-        esp_wifi_set_channel(RC_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE)
-    );
-}
-
 
 static void charge_status_init(void)
 {
@@ -1360,7 +1304,7 @@ static void transmitter_task(void *arg)
             espnow_send_pending = true;
 
             esp_err_t err = esp_now_send(
-                broadcast_mac,
+                rc_broadcast_mac,
                 (uint8_t *)&packet,
                 sizeof(packet)
             );
@@ -1447,7 +1391,7 @@ static void transmitter_task(void *arg)
             packet.flags = RC_CONTROL_FLAG_INVALID;
 
             esp_now_send(
-                broadcast_mac,
+                rc_broadcast_mac,
                 (uint8_t *)&packet,
                 sizeof(packet)
             );
@@ -1672,7 +1616,7 @@ static void transmitter_init(void)
     rtc_magic = 0;
     rtc_sleep_reason = TX_SLEEP_NONE;
 
-    wifi_init();
+    rc_radio_wifi_init();
     log_local_mac("TX", tx_mac);
 
     ESP_ERROR_CHECK(esp_now_init());
@@ -1685,7 +1629,7 @@ static void transmitter_init(void)
         esp_now_register_recv_cb(tx_recv_cb)
     );
 
-    add_espnow_peer(broadcast_mac);
+    add_espnow_peer(rc_broadcast_mac);
 
     ESP_LOGI(
         TAG,
@@ -2662,7 +2606,7 @@ static void rx_heartbeat_task(void *arg)
         rx_heartbeat_send_pending = true;
 
         esp_err_t err = esp_now_send(
-            broadcast_mac,
+            rc_broadcast_mac,
             (uint8_t *)&heartbeat,
             sizeof(heartbeat)
         );
@@ -3153,7 +3097,7 @@ static void receiver_init(void)
     }
 
 
-    wifi_init();
+    rc_radio_wifi_init();
 
     uint8_t actual_mac[ESP_NOW_ETH_ALEN] = {0};
     ESP_ERROR_CHECK(
@@ -3181,7 +3125,7 @@ static void receiver_init(void)
 
     memcpy(
         peer.peer_addr,
-        broadcast_mac,
+        rc_broadcast_mac,
         ESP_NOW_ETH_ALEN
     );
 

@@ -6,6 +6,6 @@ idf_component_register(
          "${CMAKE_CURRENT_LIST_DIR}/../../../main/status_led.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../../main/reset_diag.c"
     INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../../main"
-    REQUIRES esp_wifi esp_event esp_adc esp_timer driver esp_driver_i2c esp_driver_rmt nvs_flash
+    REQUIRES esp_wifi esp_event esp_adc esp_timer driver esp_driver_i2c esp_driver_rmt nvs_flash rc_protocol rc_radio
 )
 target_compile_definitions(${COMPONENT_LIB} PRIVATE RC_TRANSMITTER=1)
