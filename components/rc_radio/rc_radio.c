@@ -1,4 +1,5 @@
 #include "rc_radio.h"
+#include <string.h>
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -25,3 +26,23 @@ void rc_radio_wifi_init(uint8_t channel)
 }
 
 
+
+esp_err_t rc_radio_init(void)
+{
+    return esp_now_init();
+}
+
+esp_err_t rc_radio_add_broadcast_peer(uint8_t channel)
+{
+    esp_now_peer_info_t peer = {0};
+    memcpy(peer.peer_addr, rc_broadcast_mac, ESP_NOW_ETH_ALEN);
+    peer.channel = channel;
+    peer.ifidx = WIFI_IF_STA;
+    peer.encrypt = false;
+    return esp_now_add_peer(&peer);
+}
+
+esp_err_t rc_radio_send(const uint8_t *destination, const uint8_t *data, size_t size)
+{
+    return esp_now_send(destination, data, size);
+}
