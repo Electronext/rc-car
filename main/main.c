@@ -1616,7 +1616,7 @@ static void transmitter_init(void)
     rtc_magic = 0;
     rtc_sleep_reason = TX_SLEEP_NONE;
 
-    rc_radio_wifi_init();
+    rc_radio_wifi_init(RC_WIFI_CHANNEL);
     log_local_mac("TX", tx_mac);
 
     ESP_ERROR_CHECK(esp_now_init());
@@ -3097,7 +3097,7 @@ static void receiver_init(void)
     }
 
 
-    rc_radio_wifi_init();
+    rc_radio_wifi_init(RC_WIFI_CHANNEL);
 
     uint8_t actual_mac[ESP_NOW_ETH_ALEN] = {0};
     ESP_ERROR_CHECK(
