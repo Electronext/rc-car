@@ -62,16 +62,23 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("target", choices=(*TARGETS, "all"))
     p.add_argument("action", choices=tuple(ACTIONS))
-    p.add_argument("--port", help="Serial port, or set RC_PORT_<TARGET>")
+    p.add_argument("--port", help="Serial port override (otherwise local config or environment)")
     args = p.parse_args()
     if args.target == "all" and args.action != "build":
         p.error("'all' supports build only")
+    ports_file = ROOT / "rc-ports.local.json"
+    try:
+        ports = json.loads(ports_file.read_text(encoding="utf-8")) if ports_file.is_file() else {}
+        if not isinstance(ports, dict) or any(k not in TARGETS or not isinstance(v, str) for k, v in ports.items()):
+            p.error(f"Invalid target/port mapping in {ports_file}")
+    except (OSError, ValueError) as exc:
+        p.error(f"Cannot read {ports_file}: {exc}")
     for target in TARGETS if args.target == "all" else (args.target,):
         project = ROOT / "firmware" / target
         build = ROOT / "build" / target
-        port = args.port or os.getenv("RC_PORT_" + target.upper())
+        port = args.port or os.getenv("RC_PORT_" + target.upper()) or ports.get(target)
         if args.action != "build" and not port:
-            p.error("Specify --port or RC_PORT_" + target.upper())
+            p.error("Set a port in rc-ports.local.json, RC_PORT_" + target.upper() + ", or --port")
         command = ["-C", str(project), "-B", str(build)]
         if port:
             command += ["-p", port]
