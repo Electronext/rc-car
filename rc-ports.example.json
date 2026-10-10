@@ -1,0 +1,5 @@
+{
+  "transmitter": "COM10",
+  "rx_skid_steer": "COM13",
+  "rx_conventional": "COM14"
+}
