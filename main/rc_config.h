@@ -19,25 +19,25 @@
 
 // Role-specific controls / indicators.
 #if RC_TRANSMITTER
-#define BATTERY_GPIO            0
-#define THROTTLE_EXPO_POT_GPIO  1   // throttle-only expo pot
-#define STATUS_LED_GPIO         3
-#define MODE_SWITCH_GPIO        4   // LOW / FULL / STUPID selector
-#define CHARGE_STATUS_GPIO      5
-#define CHARGE_STATUS_ENABLED   0   // !CHG not wired on TX yet
+    #define BATTERY_GPIO            0
+    #define THROTTLE_EXPO_POT_GPIO  1   // throttle-only expo pot
+    #define STATUS_LED_GPIO         3
+    #define MODE_SWITCH_GPIO        4   // LOW / FULL / STUPID selector
+    #define CHARGE_STATUS_GPIO      5
+    #define CHARGE_STATUS_ENABLED   0   // !CHG not wired on TX yet
 #else
-// RX:
-//   GPIO3 VBAT: LiPo+ -> 100k -> GPIO3 -> 100k -> GND
-//   GPIO1 VUSB: VUSB -> 100k -> GPIO1 -> 150k -> GND
-//   GPIO4 !CHG: active-low charger open-drain status
-#define BATTERY_GPIO            3
-#define VUSB_PRESENT_GPIO       1
-#define CHARGE_STATUS_GPIO      4
-#define CHARGE_STATUS_ENABLED   1
-#define STATUS_LED_GPIO         8
-#define HEADLIGHT_GPIO          21
-#define REVERSE_LIGHT_GPIO      20
-#define TAIL_LIGHT_GPIO          6
+    // RX:
+    //   GPIO3 VBAT: LiPo+ -> 100k -> GPIO3 -> 100k -> GND
+    //   GPIO1 VUSB: VUSB -> 100k -> GPIO1 -> 150k -> GND
+    //   GPIO4 !CHG: active-low charger open-drain status
+    #define BATTERY_GPIO            3
+    #define VUSB_PRESENT_GPIO       1
+    #define CHARGE_STATUS_GPIO      4
+    #define CHARGE_STATUS_ENABLED   1
+    #define STATUS_LED_GPIO         8
+    #define HEADLIGHT_GPIO          21
+    #define REVERSE_LIGHT_GPIO      20
+    #define TAIL_LIGHT_GPIO          6
 #endif
 
 // Charger status is active LOW (!CHG). On RX it is only meaningful
@@ -65,7 +65,7 @@
 #define PIVOT_EXPO_EXPONENT            3.00f
 
 // Three-way selector: LOW / FULL / STUPID.
-#define DRIVE_SPEED_LOW                0.30f
+#define DRIVE_SPEED_LOW                0.40f
 #define DRIVE_SPEED_FULL               1.00f
 
 // Deliberately crude bang-bang demonstration mode.
@@ -191,16 +191,16 @@
 #define MOTOR_PWM_BITS          10
 #define MOTOR_PWM_MAX           ((1 << MOTOR_PWM_BITS) - 1)
 #define MOTOR_PWM_START_MIN     0.25f
-#define MOTOR_PWM_RUN_MIN       0.15f
+#define MOTOR_PWM_RUN_MIN       0.18f
 #define MOTOR_START_BOOST_MS    100
 
 // Below this logical wheel demand, continuous drive is replaced by
 // low-frequency pulse-density control at the threshold drive level.
 // This extends average wheel speed below the loaded continuous-running
 // floor while preserving the requested mean demand approximately.
-#define MOTOR_CHOPPER_MAX_COMMAND         0.15f
+#define MOTOR_CHOPPER_MAX_COMMAND         0.20f//0.15f
 #define MOTOR_PIVOT_CHOPPER_MAX_COMMAND   0.25f
-#define MOTOR_CHOPPER_PERIOD_MS            100
+#define MOTOR_CHOPPER_PERIOD_MS             50 //100
 #define MOTOR_CONTROL_UPDATE_MS             10
 
 // New vehicle front is the former rear: reverse both motor directions.
@@ -209,10 +209,10 @@
 
 // Vehicle lighting on RX. Head/reverse use the two spare LEDC channels;
 // tail lights are binary full-on/full-off. Values are fractions of full PWM.
-#define HEADLIGHT_DIM_LEVEL       0.20f
-#define HEADLIGHT_BRIGHT_LEVEL    1.00f
-#define HEADLIGHT_BRIGHT_HOLD_MS   5000
+#define HEADLIGHT_DIM_LEVEL         0.20f
+#define HEADLIGHT_BRIGHT_LEVEL      1.00f
+#define HEADLIGHT_BRIGHT_HOLD_MS    5000
 #define HEADLIGHT_FADE_MS            500
 
-#define REVERSE_LIGHT_DIM_LEVEL   0.50f
+#define REVERSE_LIGHT_DIM_LEVEL     0.50f
 //#define REVERSE_LIGHT_BRIGHT_LEVEL    1.00f
