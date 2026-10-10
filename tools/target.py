@@ -47,7 +47,11 @@ def run_idf(args):
 
     # Export in the same cmd.exe process that invokes idf.py so that PATH,
     # Python environment and toolchain variables remain available.
-    command = ('call ' + subprocess.list2cmdline([str(export)])
+    tools_path = os.environ.get("IDF_TOOLS_PATH") or str(idf_path.parents[1] / "tools")
+    python_env = os.environ.get("IDF_PYTHON_ENV_PATH") or str(Path(tools_path) / "python_env" / "idf5.5_py3.11_env")
+    if not (Path(python_env) / "Scripts" / "python.exe").is_file():
+        raise RuntimeError(f"ESP-IDF Python environment not found: {python_env}")
+    command = ('set "IDF_TOOLS_PATH=' + tools_path + '" && set "IDF_PYTHON_ENV_PATH=' + python_env + '" && call ' + subprocess.list2cmdline([str(export)])
                + ' && python ' + subprocess.list2cmdline([str(idf_script), *args]))
     subprocess.run(["cmd.exe", "/d", "/c", command], check=True, cwd=ROOT)
 
