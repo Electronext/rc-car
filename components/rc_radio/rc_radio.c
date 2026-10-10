@@ -1,5 +1,4 @@
 #include "rc_radio.h"
-#include "rc_config.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -7,7 +6,7 @@
 
 const uint8_t rc_broadcast_mac[ESP_NOW_ETH_ALEN] = {0xff,0xff,0xff,0xff,0xff,0xff};
 
-void rc_radio_wifi_init(void)
+void rc_radio_wifi_init(uint8_t channel)
 {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -21,7 +20,7 @@ void rc_radio_wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     ESP_ERROR_CHECK(
-        esp_wifi_set_channel(RC_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE)
+        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE)
     );
 }
 
