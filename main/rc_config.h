@@ -1,7 +1,9 @@
 #pragma once
 
 // Change to 0 for the car/receiver.
-#define RC_TRANSMITTER          0
+#ifndef RC_TRANSMITTER
+#define RC_TRANSMITTER          0 // Legacy root project default only
+#endif
 
 // ESP-NOW
 #define RC_WIFI_CHANNEL         6

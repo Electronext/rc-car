@@ -1,0 +1,96 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "serialPort",
+      "type": "promptString",
+      "description": "Serial port (e.g. COM10)",
+      "default": "COM10"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "RC: Build transmitter",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "tools/target.py",
+        "transmitter",
+        "build"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "RC: Flash transmitter",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "tools/target.py",
+        "transmitter",
+        "flash",
+        "--port",
+        "${input:serialPort}"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "RC: Build rx_skid_steer",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "tools/target.py",
+        "rx_skid_steer",
+        "build"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "RC: Flash rx_skid_steer",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "tools/target.py",
+        "rx_skid_steer",
+        "flash",
+        "--port",
+        "${input:serialPort}"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "RC: Build rx_conventional",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "tools/target.py",
+        "rx_conventional",
+        "build"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "RC: Flash rx_conventional",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "tools/target.py",
+        "rx_conventional",
+        "flash",
+        "--port",
+        "${input:serialPort}"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "RC: Build All",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "tools/target.py",
+        "all",
+        "build"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
