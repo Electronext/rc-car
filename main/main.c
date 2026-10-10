@@ -1602,11 +1602,11 @@ static void transmitter_init(void)
     ESP_ERROR_CHECK(rc_radio_init());
 
     ESP_ERROR_CHECK(
-        esp_now_register_send_cb(send_cb)
+        rc_radio_register_send_cb(send_cb)
     );
 
     ESP_ERROR_CHECK(
-        esp_now_register_recv_cb(tx_recv_cb)
+        rc_radio_register_recv_cb(tx_recv_cb)
     );
 
     ESP_ERROR_CHECK(rc_radio_add_broadcast_peer(RC_WIFI_CHANNEL));
@@ -3098,13 +3098,13 @@ static void receiver_init(void)
     ESP_ERROR_CHECK(rc_radio_init());
 
     ESP_ERROR_CHECK(
-        esp_now_register_send_cb(rx_heartbeat_send_cb)
+        rc_radio_register_send_cb(rx_heartbeat_send_cb)
     );
 
     ESP_ERROR_CHECK(rc_radio_add_broadcast_peer(RC_WIFI_CHANNEL));
 
     ESP_ERROR_CHECK(
-        esp_now_register_recv_cb(recv_cb)
+        rc_radio_register_recv_cb(recv_cb)
     );
 
     ESP_LOGI(
