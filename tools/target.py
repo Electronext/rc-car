@@ -53,7 +53,7 @@ def run_idf(args):
         raise RuntimeError(f"ESP-IDF Python environment not found: {python_env}")
     command = ('set "IDF_TOOLS_PATH=' + tools_path + '" && set "IDF_PYTHON_ENV_PATH=' + python_env + '" && call ' + subprocess.list2cmdline([str(export)])
                + ' && python ' + subprocess.list2cmdline([str(idf_script), *args]))
-    subprocess.run(["cmd.exe", "/d", "/c", command], check=True, cwd=ROOT)
+    # Resolve the actual Windows command processor, not a PATH shim.\n    comspec = Path(os.environ.get("ComSpec", r"C:\\Windows\\System32\\cmd.exe"))\n    if not comspec.is_file():\n        raise RuntimeError(f"Windows command processor not found: {comspec}")\n    subprocess.run([str(comspec), "/d", "/s", "/c", f'"{command}"'], check=True, cwd=ROOT)
 
 
 def main():
