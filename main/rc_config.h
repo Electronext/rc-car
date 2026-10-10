@@ -19,25 +19,31 @@
 
 // Role-specific controls / indicators.
 #if RC_TRANSMITTER
-    #define BATTERY_GPIO            0
-    #define THROTTLE_EXPO_POT_GPIO  1   // throttle-only expo pot
-    #define STATUS_LED_GPIO         3
-    #define MODE_SWITCH_GPIO        4   // LOW / FULL / STUPID selector
-    #define CHARGE_STATUS_GPIO      5
-    #define CHARGE_STATUS_ENABLED   0   // !CHG not wired on TX yet
+#define BATTERY_GPIO            0
+#define THROTTLE_EXPO_POT_GPIO  1   // throttle-only expo pot
+#define STATUS_LED_GPIO         3
+#define MODE_SWITCH_GPIO        4   // LOW / FULL / STUPID selector
+// TX charge sensing:
+//   GPIO10 VUSB: VUSB -> 100k -> GPIO10 -> 150k -> GND
+//   GPIO5 !CHG: active-low charger open-drain status
+#define VUSB_PRESENT_GPIO      10
+#define CHARGE_STATUS_GPIO      5
+#define CHARGE_STATUS_ENABLED   1
+#define TX_VUSB_LOCKOUT_ENABLED 1
 #else
-    // RX:
-    //   GPIO3 VBAT: LiPo+ -> 100k -> GPIO3 -> 100k -> GND
-    //   GPIO1 VUSB: VUSB -> 100k -> GPIO1 -> 150k -> GND
-    //   GPIO4 !CHG: active-low charger open-drain status
-    #define BATTERY_GPIO            3
-    #define VUSB_PRESENT_GPIO       1
-    #define CHARGE_STATUS_GPIO      4
-    #define CHARGE_STATUS_ENABLED   1
-    #define STATUS_LED_GPIO         8
-    #define HEADLIGHT_GPIO          21
-    #define REVERSE_LIGHT_GPIO      20
-    #define TAIL_LIGHT_GPIO          6
+// RX:
+//   GPIO3 VBAT: LiPo+ -> 100k -> GPIO3 -> 100k -> GND
+//   GPIO1 VUSB: VUSB -> 100k -> GPIO1 -> 150k -> GND
+//   GPIO4 !CHG: active-low charger open-drain status
+#define BATTERY_GPIO            3
+#define VUSB_PRESENT_GPIO       1
+#define CHARGE_STATUS_GPIO      4
+#define CHARGE_STATUS_ENABLED   1
+#define RX_VUSB_LOCKOUT_ENABLED 1
+#define STATUS_LED_GPIO         8
+#define HEADLIGHT_GPIO          21
+#define REVERSE_LIGHT_GPIO      20
+#define TAIL_LIGHT_GPIO          6
 #endif
 
 // Charger status is active LOW (!CHG). On RX it is only meaningful
@@ -72,6 +78,7 @@
 #define STUPID_STEERING_THRESHOLD_DEG 45.00f
 #define STUPID_THROTTLE_THRESHOLD      0.50f
 #define STUPID_PWM_MIN                 0.70f
+#define STUPID_MIN_PULSE_MS               50
 
 // AS5048B magnetic joystick sensors.
 #define AS5048B_SDA_GPIO        6
@@ -135,6 +142,7 @@
 #define STATUS_LED_BRIGHTNESS          128   // ~50% global WS2812 cap
 #define STATUS_LED_SELF_TEST_MS         150
 #define CHARGE_BREATHE_PERIOD_MS       2000
+#define CHARGE_DONE_STABLE_MS            500
 #define DISCONNECTED_SLEEP_MS        120000
 #define RX_SLEEP_POLL_MS               5000
 #define RX_POLL_LISTEN_MS                750

@@ -14,6 +14,7 @@
 #include "esp_wifi.h"
 #include "esp_now.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
 
@@ -110,7 +111,6 @@ static void charge_status_init(void)
     ESP_ERROR_CHECK(gpio_config(&cfg));
 #endif
 
-#if !RC_TRANSMITTER
     gpio_config_t vusb_cfg = {
         .pin_bit_mask = 1ULL << VUSB_PRESENT_GPIO,
         .mode = GPIO_MODE_INPUT,
@@ -120,39 +120,34 @@ static void charge_status_init(void)
     };
 
     ESP_ERROR_CHECK(gpio_config(&vusb_cfg));
-#endif
 }
 
 
 static bool external_power_present(void)
 {
-#if RC_TRANSMITTER
-#if CHARGE_STATUS_ENABLED
-    return gpio_get_level(CHARGE_STATUS_GPIO) ==
-           CHARGE_STATUS_ACTIVE_LEVEL;
-#else
-    return false;
-#endif
-#else
     return gpio_get_level(VUSB_PRESENT_GPIO) ==
            VUSB_PRESENT_ACTIVE_LEVEL;
-#endif
 }
 
 
 static bool is_charging(void)
 {
 #if CHARGE_STATUS_ENABLED
-#if RC_TRANSMITTER
-    return gpio_get_level(CHARGE_STATUS_GPIO) ==
-           CHARGE_STATUS_ACTIVE_LEVEL;
-#else
     return external_power_present() &&
            gpio_get_level(CHARGE_STATUS_GPIO) ==
                CHARGE_STATUS_ACTIVE_LEVEL;
-#endif
 #else
     return false;
+#endif
+}
+
+
+static bool vusb_lockout_enabled(void)
+{
+#if RC_TRANSMITTER
+    return TX_VUSB_LOCKOUT_ENABLED != 0;
+#else
+    return RX_VUSB_LOCKOUT_ENABLED != 0;
 #endif
 }
 
@@ -207,6 +202,85 @@ static uint8_t charging_breathe_blue(int64_t now_us)
         0.5f - 0.5f * cosf(two_pi * phase);
 
     return (uint8_t)lroundf(255.0f * envelope);
+}
+
+
+static void charge_only_mode_if_needed(const char *role)
+{
+    if (!vusb_lockout_enabled() ||
+        !external_power_present()) {
+        return;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "%s VUSB present: entering charge-only mode",
+        role
+    );
+
+    int64_t charge_done_since_us = 0;
+
+    while (external_power_present()) {
+        int64_t now = esp_timer_get_time();
+
+        if (is_charging()) {
+            charge_done_since_us = 0;
+
+            status_led_set_rgb(
+                0,
+                0,
+                charging_breathe_blue(now)
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(25));
+            continue;
+        }
+
+        /*
+         * !CHG can briefly deassert while the charger settles. Require
+         * a stable completed state before latching solid blue + sleep.
+         */
+        if (charge_done_since_us == 0) {
+            charge_done_since_us = now;
+        }
+
+        if ((now - charge_done_since_us) <
+            ((int64_t)CHARGE_DONE_STABLE_MS * 1000LL)) {
+
+            status_led_set_rgb(
+                0,
+                0,
+                charging_breathe_blue(now)
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(25));
+            continue;
+        }
+
+        ESP_LOGI(TAG, "%s charging complete", role);
+
+        /*
+         * Leave the WS2812 latched solid blue, then sleep with no wake
+         * source configured. A power cycle is intentionally required.
+         */
+        status_led_set_rgb(0, 0, 255);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        esp_deep_sleep_start();
+    }
+
+    /*
+     * USB was removed before charge completion. Stay latched out of RC
+     * operation until the next power cycle.
+     */
+    ESP_LOGW(
+        TAG,
+        "%s VUSB removed during charge-only mode; sleeping until power cycle",
+        role
+    );
+
+    status_led_off();
+    vTaskDelay(pdMS_TO_TICKS(20));
+    esp_deep_sleep_start();
 }
 
 
@@ -997,6 +1071,18 @@ static void status_task(void *arg)
     while (1) {
         int64_t now = esp_timer_get_time();
 
+        if (vusb_lockout_enabled() &&
+            external_power_present()) {
+
+            ESP_LOGI(
+                TAG,
+                "TX VUSB inserted: rebooting into charge-only mode"
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(10));
+            esp_restart();
+        }
+
         if ((now - last_battery_read_us) >= 1000000LL) {
             battery_mv = read_battery_mv();
             last_battery_read_us = now;
@@ -1493,6 +1579,12 @@ static void transmitter_init(void)
     charge_status_init();
     status_led_init();
 
+    /*
+     * With VUSB lockout enabled, do not initialise controls, Wi-Fi or
+     * ESP-NOW while externally powered.
+     */
+    charge_only_mode_if_needed("TX");
+
     int battery_mv = read_battery_mv();
     bool charging = is_charging();
 
@@ -1895,6 +1987,82 @@ typedef struct {
 static motor_state_t left_motor_state = {0};
 static motor_state_t right_motor_state = {0};
 
+typedef struct {
+    int16_t held_command;
+    int64_t hold_until_us;
+} stupid_pulse_state_t;
+
+static stupid_pulse_state_t stupid_left_pulse = {0};
+static stupid_pulse_state_t stupid_right_pulse = {0};
+
+
+static void stupid_pulse_reset(void)
+{
+    stupid_left_pulse.held_command = 0;
+    stupid_left_pulse.hold_until_us = 0;
+    stupid_right_pulse.held_command = 0;
+    stupid_right_pulse.hold_until_us = 0;
+}
+
+
+static int16_t stupid_min_pulse_apply(int16_t requested,
+                                      stupid_pulse_state_t *state,
+                                      int64_t now)
+{
+    int requested_sign =
+        requested > 0 ? 1 :
+        requested < 0 ? -1 : 0;
+
+    int held_sign =
+        state->held_command > 0 ? 1 :
+        state->held_command < 0 ? -1 : 0;
+
+    if (requested_sign != 0) {
+        /*
+         * Starting from zero, or changing direction after the previous
+         * minimum pulse has completed, starts a fresh minimum pulse.
+         */
+        if (held_sign == 0 ||
+            (requested_sign != held_sign &&
+             now >= state->hold_until_us)) {
+
+            state->held_command = requested;
+            state->hold_until_us =
+                now + (int64_t)STUPID_MIN_PULSE_MS * 1000LL;
+
+            return requested;
+        }
+
+        /*
+         * A direction reversal requested during the minimum pulse has
+         * to wait; this mimics the sluggish original bang-bang control.
+         */
+        if (requested_sign != held_sign &&
+            now < state->hold_until_us) {
+            return state->held_command;
+        }
+
+        /*
+         * Same direction: allow the 70..100% magnitude to track the
+         * input, but preserve the original pulse expiry time.
+         */
+        state->held_command = requested;
+        return requested;
+    }
+
+    /*
+     * Releasing the control cannot terminate the pulse early.
+     */
+    if (held_sign != 0 &&
+        now < state->hold_until_us) {
+        return state->held_command;
+    }
+
+    state->held_command = 0;
+    state->hold_until_us = 0;
+    return 0;
+}
+
 
 static void pwm_set(ledc_channel_t channel, uint32_t duty)
 {
@@ -2088,6 +2256,8 @@ static void motors_stop(void)
     right_motor_state.chopper_active = false;
     right_motor_state.chopper_epoch_us = 0;
     right_motor_state.applied_pwm_permille = 0;
+
+    stupid_pulse_reset();
 }
 
 
@@ -2556,6 +2726,27 @@ static void motor_task(void *arg)
 
         int64_t now = esp_timer_get_time();
 
+        if (vusb_lockout_enabled() &&
+            external_power_present()) {
+
+            /*
+             * VUSB directly powers the H-bridge rail. Remove every
+             * software drive immediately, then reboot into the boot-time
+             * charge-only path where Wi-Fi/ESP-NOW are never started.
+             */
+            rx_shutdown_pending = true;
+            motors_stop();
+            vehicle_lights_off();
+
+            ESP_LOGI(
+                TAG,
+                "RX VUSB inserted: motors off; rebooting into charge-only mode"
+            );
+
+            vTaskDelay(pdMS_TO_TICKS(10));
+            esp_restart();
+        }
+
         if (rx_shutdown_pending) {
             motors_stop();
             vehicle_lights_off();
@@ -2591,16 +2782,37 @@ static void motor_task(void *arg)
              * This allows low-speed chopper timing to run independently
              * of the 25 Hz ESP-NOW control packet rate.
              */
+            int16_t effective_left = current_left;
+            int16_t effective_right = current_right;
+
+            if (current_stupid_mode) {
+                effective_left =
+                    stupid_min_pulse_apply(
+                        current_left,
+                        &stupid_left_pulse,
+                        now
+                    );
+
+                effective_right =
+                    stupid_min_pulse_apply(
+                        current_right,
+                        &stupid_right_pulse,
+                        now
+                    );
+            } else {
+                stupid_pulse_reset();
+            }
+
             set_motors(
-                current_left,
-                current_right,
+                effective_left,
+                effective_right,
                 current_pivot_mode,
                 current_stupid_mode
             );
 
             vehicle_lights_update(
-                current_left,
-                current_right,
+                effective_left,
+                effective_right,
                 true,
                 external_power_present()
             );
@@ -2825,6 +3037,12 @@ static void receiver_init(void)
     receiver_adc_init();
     charge_status_init();
     status_led_init();
+
+    /*
+     * This runs before LEDC motor setup and before Wi-Fi/ESP-NOW, so
+     * VUSB can never leave the H-bridge software-enabled on boot.
+     */
+    charge_only_mode_if_needed("RX");
 
     int battery_mv = rx_read_battery_mv();
     rx_latest_battery_mv = battery_mv;
