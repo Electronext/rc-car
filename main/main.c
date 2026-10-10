@@ -1035,9 +1035,8 @@ static void status_task(void *arg)
         bool charging = is_charging();
 
         bool linked =
-            last_heartbeat_us != 0 &&
-            (now - last_heartbeat_us) <=
-                ((int64_t)RC_HEARTBEAT_TIMEOUT_MS * 1000LL);
+            rc_radio_is_recent(now, last_heartbeat_us,
+                               RC_HEARTBEAT_TIMEOUT_MS);
 
         if (!charging &&
             battery_mv < BATTERY_LOW_CUTOFF_MV) {
@@ -1353,9 +1352,8 @@ static void transmitter_task(void *arg)
         bool charging = is_charging();
 
         bool linked =
-            last_heartbeat_us != 0 &&
-            (now - last_heartbeat_us) <=
-                ((int64_t)RC_HEARTBEAT_TIMEOUT_MS * 1000LL);
+            rc_radio_is_recent(now, last_heartbeat_us,
+                               RC_HEARTBEAT_TIMEOUT_MS);
 
         if (charging || linked) {
             disconnected_since_us = 0;
@@ -2679,8 +2677,8 @@ static void motor_task(void *arg)
         }
 
         if (!failsafe_active &&
-            (now - last_packet_us) >
-                ((int64_t)RC_FAILSAFE_MS * 1000LL)) {
+            !rc_radio_is_recent(now, last_packet_us,
+                                 RC_FAILSAFE_MS)) {
 
             if (!rx_failsafe_active) {
                 rx_failsafe_count++;
