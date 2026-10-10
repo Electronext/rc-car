@@ -1303,7 +1303,7 @@ static void transmitter_task(void *arg)
             tx_send_started_us = esp_timer_get_time();
             espnow_send_pending = true;
 
-            esp_err_t err = esp_now_send(
+            esp_err_t err = rc_radio_send(
                 rc_broadcast_mac,
                 (uint8_t *)&packet,
                 sizeof(packet)
@@ -1390,7 +1390,7 @@ static void transmitter_task(void *arg)
             packet.right = 0;
             packet.flags = RC_CONTROL_FLAG_INVALID;
 
-            esp_now_send(
+            rc_radio_send(
                 rc_broadcast_mac,
                 (uint8_t *)&packet,
                 sizeof(packet)
@@ -1469,26 +1469,6 @@ static void transmitter_task(void *arg)
 
         vTaskDelay(pdMS_TO_TICKS(RC_TX_PERIOD_MS));
     }
-}
-
-
-static void add_espnow_peer(const uint8_t *peer_mac)
-{
-    esp_now_peer_info_t peer = {0};
-
-    memcpy(
-        peer.peer_addr,
-        peer_mac,
-        ESP_NOW_ETH_ALEN
-    );
-
-    peer.channel = RC_WIFI_CHANNEL;
-    peer.ifidx = WIFI_IF_STA;
-    peer.encrypt = false;
-
-    ESP_ERROR_CHECK(
-        esp_now_add_peer(&peer)
-    );
 }
 
 
@@ -1619,7 +1599,7 @@ static void transmitter_init(void)
     rc_radio_wifi_init(RC_WIFI_CHANNEL);
     log_local_mac("TX", tx_mac);
 
-    ESP_ERROR_CHECK(esp_now_init());
+    ESP_ERROR_CHECK(rc_radio_init());
 
     ESP_ERROR_CHECK(
         esp_now_register_send_cb(send_cb)
@@ -1629,7 +1609,7 @@ static void transmitter_init(void)
         esp_now_register_recv_cb(tx_recv_cb)
     );
 
-    add_espnow_peer(rc_broadcast_mac);
+    ESP_ERROR_CHECK(rc_radio_add_broadcast_peer(RC_WIFI_CHANNEL));
 
     ESP_LOGI(
         TAG,
@@ -2605,7 +2585,7 @@ static void rx_heartbeat_task(void *arg)
 
         rx_heartbeat_send_pending = true;
 
-        esp_err_t err = esp_now_send(
+        esp_err_t err = rc_radio_send(
             rc_broadcast_mac,
             (uint8_t *)&heartbeat,
             sizeof(heartbeat)
@@ -3115,27 +3095,13 @@ static void receiver_init(void)
         ESP_LOGW(TAG, "RX MAC does not match configured board");
     }
 
-    ESP_ERROR_CHECK(esp_now_init());
+    ESP_ERROR_CHECK(rc_radio_init());
 
     ESP_ERROR_CHECK(
         esp_now_register_send_cb(rx_heartbeat_send_cb)
     );
 
-    esp_now_peer_info_t peer = {0};
-
-    memcpy(
-        peer.peer_addr,
-        rc_broadcast_mac,
-        ESP_NOW_ETH_ALEN
-    );
-
-    peer.channel = RC_WIFI_CHANNEL;
-    peer.ifidx = WIFI_IF_STA;
-    peer.encrypt = false;
-
-    ESP_ERROR_CHECK(
-        esp_now_add_peer(&peer)
-    );
+    ESP_ERROR_CHECK(rc_radio_add_broadcast_peer(RC_WIFI_CHANNEL));
 
     ESP_ERROR_CHECK(
         esp_now_register_recv_cb(recv_cb)
