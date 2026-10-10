@@ -1,13 +1,5 @@
 {
   "version": "2.0.0",
-  "inputs": [
-    {
-      "id": "serialPort",
-      "type": "promptString",
-      "description": "Serial port (e.g. COM10)",
-      "default": "COM10"
-    }
-  ],
   "tasks": [
     {
       "label": "RC: Build transmitter",
@@ -27,9 +19,7 @@
       "args": [
         "tools/target.py",
         "transmitter",
-        "flash",
-        "--port",
-        "${input:serialPort}"
+        "flash"
       ],
       "problemMatcher": []
     },
@@ -51,9 +41,7 @@
       "args": [
         "tools/target.py",
         "rx_skid_steer",
-        "flash",
-        "--port",
-        "${input:serialPort}"
+        "flash"
       ],
       "problemMatcher": []
     },
@@ -75,9 +63,7 @@
       "args": [
         "tools/target.py",
         "rx_conventional",
-        "flash",
-        "--port",
-        "${input:serialPort}"
+        "flash"
       ],
       "problemMatcher": []
     },
