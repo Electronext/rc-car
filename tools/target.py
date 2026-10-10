@@ -30,30 +30,32 @@ def find_idf_path():
 
 
 def run_idf(args):
-    # An ESP-IDF terminal already exports its Python, tools and IDF_PATH.
-    if os.environ.get("IDF_PATH") and shutil.which("idf.py"):
-        subprocess.run(["idf.py", *args], check=True, cwd=ROOT)
-        return
-
+    """Invoke idf.py with the working interpreter, without shell indirection."""
     idf_path = find_idf_path()
-    if os.name != "nt":
-        raise RuntimeError("Activate ESP-IDF in the terminal (idf.py on PATH) before running this task.")
     if idf_path is None:
-        raise RuntimeError("ESP-IDF not found. Set IDF_PATH or idf.currentSetup in .vscode/settings.json.")
-    export = idf_path / "export.bat"
+        raise RuntimeError("Set IDF_PATH or idf.currentSetup in .vscode/settings.json")
     idf_script = idf_path / "tools" / "idf.py"
-    if not export.is_file() or not idf_script.is_file():
-        raise RuntimeError(f"Invalid ESP-IDF installation at {idf_path}: export.bat or tools/idf.py missing")
+    if not idf_script.is_file():
+        raise RuntimeError(f"ESP-IDF entry point not found: {idf_script}")
 
-    # Export in the same cmd.exe process that invokes idf.py so that PATH,
-    # Python environment and toolchain variables remain available.
-    tools_path = os.environ.get("IDF_TOOLS_PATH") or str(idf_path.parents[1] / "tools")
-    python_env = os.environ.get("IDF_PYTHON_ENV_PATH") or str(Path(tools_path) / "python_env" / "idf5.5_py3.11_env")
-    if not (Path(python_env) / "Scripts" / "python.exe").is_file():
-        raise RuntimeError(f"ESP-IDF Python environment not found: {python_env}")
-    command = ('set "IDF_TOOLS_PATH=' + tools_path + '" && set "IDF_PYTHON_ENV_PATH=' + python_env + '" && call ' + subprocess.list2cmdline([str(export)])
-               + ' && python ' + subprocess.list2cmdline([str(idf_script), *args]))
-    # Resolve the actual Windows command processor, not a PATH shim.\n    comspec = Path(os.environ.get("ComSpec", r"C:\\Windows\\System32\\cmd.exe"))\n    if not comspec.is_file():\n        raise RuntimeError(f"Windows command processor not found: {comspec}")\n    subprocess.run([str(comspec), "/d", "/s", "/c", f'"{command}"'], check=True, cwd=ROOT)
+    tools_path = Path(os.environ.get("IDF_TOOLS_PATH") or
+                      str(idf_path.parents[1] / "tools"))
+    env_path = Path(os.environ.get("IDF_PYTHON_ENV_PATH") or
+                    str(tools_path / "python_env" / "idf5.5_py3.11_env"))
+    python_exe = env_path / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not python_exe.is_file():
+        raise RuntimeError(f"ESP-IDF Python not found: {python_exe}")
+
+    env = os.environ.copy()
+    env["IDF_PATH"] = str(idf_path)
+    env["IDF_TOOLS_PATH"] = str(tools_path)
+    env["IDF_PYTHON_ENV_PATH"] = str(env_path)
+    cmd = [str(python_exe), str(idf_script), *args]
+    print("Executable:", python_exe, flush=True)
+    try:
+        subprocess.run(cmd, check=True, cwd=ROOT, env=env)
+    except OSError as exc:
+        raise RuntimeError(f"Could not launch {python_exe}: {exc}") from exc
 
 
 def main():
