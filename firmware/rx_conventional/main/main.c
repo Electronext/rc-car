@@ -31,6 +31,7 @@ static volatile uint16_t last_sequence;
 static volatile int16_t last_left, last_right;
 static volatile uint32_t valid_frames;
 static i2c_master_dev_handle_t sensor;
+static i2c_master_bus_handle_t sensor_bus;
 
 static void outputs_safe(void)
 {
@@ -63,7 +64,6 @@ static void receive_cb(const esp_now_recv_info_t *info,
 
 static void sensor_init(void)
 {
-    i2c_master_bus_handle_t bus;
     i2c_master_bus_config_t cfg = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .i2c_port = I2C_NUM_0,
@@ -72,13 +72,14 @@ static void sensor_init(void)
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = false
     };
-    ESP_ERROR_CHECK(i2c_new_master_bus(&cfg, &bus));
+    ESP_ERROR_CHECK(i2c_new_master_bus(&cfg, &sensor_bus));
     i2c_device_config_t dev = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = SENSOR_ADDR,
         .scl_speed_hz = 400000
     };
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev, &sensor));
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(sensor_bus, &dev, &sensor));
+    ESP_LOGI(TAG, "I2C initialized SDA=2 SCL=6 addr=0x40");
 }
 
 void app_main(void)
@@ -100,8 +101,9 @@ void app_main(void)
     while (1) {
         uint8_t reg = SENSOR_AGC_REG;
         uint8_t bytes[6] = {0};
-        esp_err_t err = i2c_master_transmit_receive(
-            sensor, &reg, 1, bytes, sizeof(bytes), 50);
+        esp_err_t probe = i2c_master_probe(sensor_bus, SENSOR_ADDR, 50);
+        esp_err_t err = probe == ESP_OK ? i2c_master_transmit_receive(
+            sensor, &reg, 1, bytes, sizeof(bytes), 50) : probe;
         int64_t now = esp_timer_get_time();
         bool linked = rc_radio_is_recent(now, last_control_us, RC_FAILSAFE_MS);
         if (err == ESP_OK) {
@@ -114,8 +116,8 @@ void app_main(void)
                      linked ? "linked" : "timeout", last_sequence,
                      last_left, last_right, (unsigned long)valid_frames);
         } else {
-            ESP_LOGW(TAG, "AS5048B read failed: %s; radio=%s; MOTORS OFF",
-                     esp_err_to_name(err), linked ? "linked" : "timeout");
+            ESP_LOGW(TAG, "AS5048B probe=%s read=%s; radio=%s; MOTORS OFF",
+                     esp_err_to_name(probe), esp_err_to_name(err), linked ? "linked" : "timeout");
         }
         vTaskDelay(pdMS_TO_TICKS(500));
     }
