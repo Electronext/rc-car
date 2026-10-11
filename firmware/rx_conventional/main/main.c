@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_now.h"
@@ -85,6 +86,13 @@ void app_main(void)
     outputs_safe(); // First action: both direction inputs of both bridges LOW.
     ESP_LOGW(TAG, "DIAGNOSTIC ONLY: motor outputs disabled");
     sensor_init();
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
     rc_radio_wifi_init(RC_CHANNEL);
     ESP_ERROR_CHECK(rc_radio_init());
     ESP_ERROR_CHECK(rc_radio_register_recv_cb(receive_cb));
