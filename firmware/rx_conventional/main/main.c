@@ -123,6 +123,6 @@ void app_main(void)
             ESP_LOGW(TAG, "AS5048B probe=%s read=%s; radio=%s; MOTORS OFF",
                      esp_err_to_name(probe), esp_err_to_name(err), linked ? "linked" : "timeout");
         }
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
