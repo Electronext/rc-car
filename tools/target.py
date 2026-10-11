@@ -50,6 +50,21 @@ def run_idf(args):
     env["IDF_PATH"] = str(idf_path)
     env["IDF_TOOLS_PATH"] = str(tools_path)
     env["IDF_PYTHON_ENV_PATH"] = str(env_path)
+    # Resolve ESP-IDF managed tool directories even in a fresh terminal.
+    # idf_tools.py export --format key-value emits PATH plus environment entries.
+    export_cmd = [str(python_exe), str(idf_path / "tools" / "idf_tools.py"),
+                  "export", "--format", "key-value"]
+    exported = subprocess.run(export_cmd, check=True, capture_output=True,
+                              text=True, cwd=ROOT, env=env)
+    for line in exported.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "PATH":
+            env["PATH"] = value + os.pathsep + env.get("PATH", "")
+        elif key in ("IDF_TOOLS_PATH", "IDF_PYTHON_ENV_PATH", "OPENOCD_SCRIPTS",
+                     "ESP_ROM_ELF_DIR", "IDF_CCACHE_ENABLE"):
+            env[key] = value
     cmd = [str(python_exe), str(idf_script), *args]
     print("Executable:", python_exe, flush=True)
     try:
