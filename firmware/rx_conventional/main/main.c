@@ -22,7 +22,7 @@
 #define STEER_RIGHT GPIO_NUM_7
 #define SENSOR_SDA GPIO_NUM_2
 #define SENSOR_SCL GPIO_NUM_6
-#define SENSOR_ADDR 0x40
+#define SENSOR_ADDR 0x41
 #define SENSOR_AGC_REG 0xFA
 
 static const char *TAG = "RX_CONVENTIONAL";
@@ -79,7 +79,7 @@ static void sensor_init(void)
         .scl_speed_hz = 400000
     };
     ESP_ERROR_CHECK(i2c_master_bus_add_device(sensor_bus, &dev, &sensor));
-    ESP_LOGI(TAG, "I2C initialized SDA=2 SCL=6 addr=0x40");
+    ESP_LOGI(TAG, "I2C initialized SDA=2 SCL=6 addr=0x41");
 }
 
 void app_main(void)
